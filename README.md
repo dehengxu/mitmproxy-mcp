@@ -58,10 +58,22 @@ gh auth refresh -h github.com -s workflow   # 一次性授权
 python3 scripts/test_map_tools.py ~/.local/bin/mitmproxy-mcp-u33pk
 ```
 
+## 上游引用
+
+本仓库 vendoring 两份上游源码，**精确基线 commit、本地补丁清单、同步流程**记录在 [UPSTREAM.md](UPSTREAM.md)。
+
+| 上游 | 路径 | 许可 | 基线 | 本地改动 |
+|---|---|---|---|---|
+| [snapspecter/mitmproxy-mcp](https://github.com/snapspecter/mitmproxy-mcp) | `spectral/` | MIT | `919bf0f4` (v0.8.0) | 无 |
+| [u33pk/mitmproxy-mcp](https://github.com/u33pk/mitmproxy-mcp) | `u33pk/` | MIT | `307e6912` (2026-08-29) | 2 处（见 UPSTREAM.md） |
+
+维护者请先读 [UPSTREAM.md](UPSTREAM.md)。
+
 ## 目录结构
 
 ```
 mitmproxy-mcp/
+├── UPSTREAM.md          # 上游引用记录：基线 commit、补丁清单、同步流程
 ├── spectral/            # 上游 A 源码（snapspecter, MIT）
 ├── u33pk/               # 上游 B 源码（u33pk, MIT，含本仓库的修复）
 ├── skills/

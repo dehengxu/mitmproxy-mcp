@@ -2,6 +2,8 @@
 
 本仓库 vendoring 了两份上游源码，各自保留原始许可与归属。
 
+各上游的精确基线 commit、本地改动清单与同步流程见 [UPSTREAM.md](UPSTREAM.md)。
+
 ## spectral/ — snapspecter/mitmproxy-mcp
 
 - 来源：https://github.com/snapspecter/mitmproxy-mcp
