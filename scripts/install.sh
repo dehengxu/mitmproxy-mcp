@@ -64,11 +64,13 @@ if [ -x "$SPECTRAL_DIR/bin/mitmproxy-mcp" ]; then
 else
   if command -v uv >/dev/null 2>&1; then
     if [ "$CHECK_ONLY" -eq 0 ]; then
-      # "mcp<2" is required: mcp 2.x renamed FastMCP -> MCPServer, and 0.6.1
-      # declared "mcp>=1.25.0" with no upper bound, so a fresh install crashes
-      # with ModuleNotFoundError: mcp.server.fastmcp.
-      uv tool install --with "mcp<2" mitmproxy-mcp
-      ok "installed via uv tool install"
+      # Install the vendored 0.8.0 (the git main version). PyPI still ships
+      # 0.6.1, which declares "mcp>=1.25.0" with no upper bound: mcp 2.x
+      # renamed FastMCP -> MCPServer, so that install crashes with
+      # ModuleNotFoundError: mcp.server.fastmcp. The vendored 0.8.0 already
+      # pins mcp>=1.25.0,<2.0.0.
+      uv tool install --with "mcp<2" "$REPO_ROOT/spectral"
+      ok "installed from vendored source via uv tool install"
     else
       warn "not installed (would install via uv tool install)"
     fi
@@ -84,17 +86,20 @@ if [ -x "$U33PK_HOME/.venv/bin/mitmproxy-mcp" ]; then
   ok "already installed: $U33PK_HOME/.venv/bin/mitmproxy-mcp"
 else
   if [ "$CHECK_ONLY" -eq 0 ]; then
-    if command -v uv >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+    if command -v uv >/dev/null 2>&1; then
       mkdir -p "$(dirname "$U33PK_HOME")"
-      git clone https://github.com/u33pk/mitmproxy-mcp.git "$U33PK_HOME"
+      # Install from the vendored tree in this repo, which carries our fixes
+      # (map_*_ctl double-unpack bug + the mcp<2 pin). See docs/upstream-fixes.md.
+      rm -rf "$U33PK_HOME"
+      cp -R "$REPO_ROOT/u33pk" "$U33PK_HOME"
       cd "$U33PK_HOME"
       uv venv --python 3.13
       uv pip install -e ".[dev]"
       # Same mcp<2 pin as spectral -- upstream declares "mcp>=1.28.0" unbounded.
       uv pip install "mcp<2"
-      ok "installed from source"
+      ok "installed from vendored source (patched)"
     else
-      warn "uv/git not found; see docs/install.md"
+      warn "uv not found; see docs/install.md"
     fi
   else
     warn "not installed (would clone + uv pip install -e)"
