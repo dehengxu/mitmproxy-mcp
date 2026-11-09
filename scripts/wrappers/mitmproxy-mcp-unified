@@ -14,8 +14,10 @@ mkdir -p "$STATE_DIR"
 cd "$STATE_DIR"
 
 # The upstream wrappers already pin each server's own state dir and port.
-export SPECTRAL_BIN="${SPECTRAL_BIN:-$HOME/.local/bin/mitmproxy-mcp-spectral}"
-export U33PK_BIN="${U33PK_BIN:-$HOME/.local/bin/mitmproxy-mcp-u33pk}"
+# Resolve them next to this wrapper so the install location does not matter.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SPECTRAL_BIN="${SPECTRAL_BIN:-$SELF_DIR/mitmproxy-mcp-spectral}"
+export U33PK_BIN="${U33PK_BIN:-$SELF_DIR/mitmproxy-mcp-u33pk}"
 
 # Python that has the mcp SDK installed.
 MITMPROXY_MCP_PYTHON="${MITMPROXY_MCP_PYTHON:-}"

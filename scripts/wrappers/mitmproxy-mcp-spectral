@@ -20,11 +20,21 @@ cd "$STATE_DIR"
 export MITMPROXY_DEFAULT_PORT="${MITMPROXY_DEFAULT_PORT:-8081}"
 export MITMPROXY_MCP_FLAVOR="spectral"
 
-# Override to point at a different Spectral install.
-SPECTRAL_BIN="${SPECTRAL_BIN:-$HOME/.local/share/uv/tools/mitmproxy-mcp/bin/mitmproxy-mcp}"
+# Locate the Spectral executable.
+#
+# Resolution order:
+#   1. \$SPECTRAL_BIN                     (explicit override)
+#   2. <wrapper dir>/mitmproxy-mcp-spectral-upstream   (installed next to this wrapper)
+#   3. uv tool install location under \$HOME
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SPECTRAL_BIN="${SPECTRAL_BIN:-$SELF_DIR/mitmproxy-mcp-spectral-upstream}"
+if [ ! -x "$SPECTRAL_BIN" ]; then
+  SPECTRAL_BIN="$HOME/.local/share/uv/tools/mitmproxy-mcp/bin/mitmproxy-mcp"
+fi
 
 if [ ! -x "$SPECTRAL_BIN" ]; then
-  echo "mitmproxy-mcp-spectral: cannot find Spectral executable at $SPECTRAL_BIN" >&2
+  echo "mitmproxy-mcp-spectral: cannot find the Spectral executable." >&2
+  echo "Looked in: $SPECTRAL_BIN, $SELF_DIR, $HOME/.local/share/uv/tools/mitmproxy-mcp/bin/" >&2
   echo "Set SPECTRAL_BIN to override. See docs/install.md." >&2
   exit 1
 fi

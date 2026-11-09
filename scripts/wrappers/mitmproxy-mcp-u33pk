@@ -19,11 +19,21 @@ cd "$STATE_DIR"
 export MITMPROXY_DEFAULT_PORT="${MITMPROXY_DEFAULT_PORT:-8082}"
 export MITMPROXY_MCP_FLAVOR="u33pk"
 
-# Override to point at a different u33pk install.
-U33PK_BIN="${U33PK_BIN:-$HOME/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk/.venv/bin/mitmproxy-mcp}"
+# Locate the u33pk executable.
+#
+# Resolution order:
+#   1. \$U33PK_BIN                        (explicit override)
+#   2. <wrapper dir>/mitmproxy-mcp-u33pk-upstream      (installed next to this wrapper)
+#   3. the standard source checkout under \$HOME
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+U33PK_BIN="${U33PK_BIN:-$SELF_DIR/mitmproxy-mcp-u33pk-upstream}"
+if [ ! -x "$U33PK_BIN" ]; then
+  U33PK_BIN="$HOME/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk/.venv/bin/mitmproxy-mcp"
+fi
 
 if [ ! -x "$U33PK_BIN" ]; then
-  echo "mitmproxy-mcp-u33pk: cannot find u33pk executable at $U33PK_BIN" >&2
+  echo "mitmproxy-mcp-u33pk: cannot find the u33pk executable." >&2
+  echo "Looked in: \$U33PK_BIN, $SELF_DIR, $HOME/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk/" >&2
   echo "Set U33PK_BIN to override. See docs/install.md." >&2
   exit 1
 fi

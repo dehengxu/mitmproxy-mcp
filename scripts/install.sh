@@ -128,6 +128,17 @@ if [ "$CHECK_ONLY" -eq 0 ]; then
   cp "$REPO_ROOT/scripts/wrappers/mitmproxy-mcp-unified" "$BIN_DIR/mitmproxy-mcp-unified"
   chmod +x "$BIN_DIR/mitmproxy-mcp-unified"
   ok "installed $BIN_DIR/mitmproxy-mcp-unified"
+
+  # Make the upstream executables reachable from the wrappers, regardless of
+  # where the upstreams were installed.
+  if [ -x "$SPECTRAL_DIR/bin/mitmproxy-mcp" ]; then
+    ln -sf "$SPECTRAL_DIR/bin/mitmproxy-mcp" "$BIN_DIR/mitmproxy-mcp-spectral-upstream"
+    ok "linked spectral upstream"
+  fi
+  if [ -x "$U33PK_HOME/.venv/bin/mitmproxy-mcp" ]; then
+    ln -sf "$U33PK_HOME/.venv/bin/mitmproxy-mcp" "$BIN_DIR/mitmproxy-mcp-u33pk-upstream"
+    ok "linked u33pk upstream"
+  fi
 else
   [ -x "$BIN_DIR/mitmproxy-mcp-unified" ] && ok "present $BIN_DIR/mitmproxy-mcp-unified" \
     || warn "missing $BIN_DIR/mitmproxy-mcp-unified"
