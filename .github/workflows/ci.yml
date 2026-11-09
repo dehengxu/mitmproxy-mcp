@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: shellcheck scripts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck scripts/install.sh scripts/verify.sh scripts/wrappers/*
+
+      - name: compile vendored sources
+        run: python -m compileall -q spectral/src u33pk/src
+
+      - name: assert upstream fixes are present
+        run: |
+          set -euo pipefail
+          # The map_*_ctl double-unpack bug must be fixed in the vendored u33pk.
+          ! grep -q 'MapRemoteRule(\*\*rule)' u33pk/src/mitmproxy_mcp/server.py
+          ! grep -q 'MapLocalRule(\*\*rule)' u33pk/src/mitmproxy_mcp/server.py
+          grep -q 'MapRemoteRule.model_validate(rule)' u33pk/src/mitmproxy_mcp/server.py
+          grep -q 'MapLocalRule.model_validate(rule)' u33pk/src/mitmproxy_mcp/server.py
+          # mcp must stay pinned below 2.0 (mcp 2.x renamed FastMCP -> MCPServer)
+          grep -q 'mcp>=1.28.0,<2.0.0' u33pk/pyproject.toml
+
+  map-tools-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: install vendored u33pk
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "u33pk[dev]"
+          python -m pip install "mcp<2"
+
+      - name: map tools must not raise on add
+        run: python scripts/test_map_tools.py

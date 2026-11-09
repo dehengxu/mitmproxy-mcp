@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# spectral runtime artifact (hardcoded CWD-relative path)
+mitm_mcp_traffic.db
+mitm_mcp_traffic.db-journal
+
+# mitmproxy state
+.mitmproxy/
+
+# OS
+.DS_Store

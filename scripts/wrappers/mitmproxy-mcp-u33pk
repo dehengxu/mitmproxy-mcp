@@ -1,0 +1,31 @@
+#!/bin/bash
+# Wrapper for u33pk/mitmproxy-mcp.
+#
+# Two jobs:
+#   1. Pin the working directory, so its state never lands in an arbitrary
+#      project folder.
+#   2. Pin the default proxy port to 8082 (mitmweb on 8083), so it cannot
+#      collide with the Spectral instance (which uses 8081).
+#
+# Note: u33pk's --port CLI flag is the SSE transport port (default 8081), NOT
+# the proxy port. The proxy port is only settable via
+# proxy_ctl(cmd="start", port=...).
+set -euo pipefail
+
+STATE_DIR="${MITMPROXY_MCP_STATE_DIR:-$HOME/.local/state/mitmproxy-mcp/u33pk}"
+mkdir -p "$STATE_DIR"
+cd "$STATE_DIR"
+
+export MITMPROXY_DEFAULT_PORT="${MITMPROXY_DEFAULT_PORT:-8082}"
+export MITMPROXY_MCP_FLAVOR="u33pk"
+
+# Override to point at a different u33pk install.
+U33PK_BIN="${U33PK_BIN:-$HOME/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk/.venv/bin/mitmproxy-mcp}"
+
+if [ ! -x "$U33PK_BIN" ]; then
+  echo "mitmproxy-mcp-u33pk: cannot find u33pk executable at $U33PK_BIN" >&2
+  echo "Set U33PK_BIN to override. See docs/install.md." >&2
+  exit 1
+fi
+
+exec "$U33PK_BIN" "$@"

@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Install both mitmproxy MCP servers, the unified skill, and the wrapper scripts.
+#
+# Usage:
+#   ./scripts/install.sh                 # install everything
+#   ./scripts/install.sh --no-mitmproxy  # skip installing mitmproxy itself
+#   ./scripts/install.sh --check         # report what is present, change nothing
+#
+# Idempotent: safe to re-run.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SKILL_DIR="${SKILLS_DIR:-$HOME/.agents/skills}"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+STATE_DIR="${STATE_DIR:-$HOME/.local/state/mitmproxy-mcp}"
+U33PK_HOME="${U33PK_HOME:-$HOME/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk}"
+
+CHECK_ONLY=0
+INSTALL_MITMPROXY=1
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK_ONLY=1 ;;
+    --no-mitmproxy) INSTALL_MITMPROXY=0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+say()  { printf '\033[1;34m==\033[0m %s\n' "$*"; }
+ok()   { printf '  \033[0;32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[0;33m!\033[0m %s\n' "$*"; }
+die()  { printf '  \033[0;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+
+echo
+say "mitmproxy-mcp installer"
+echo "  repo: $REPO_ROOT"
+echo
+
+# ---------------------------------------------------------------- mitmproxy
+if [ "$INSTALL_MITMPROXY" -eq 1 ]; then
+  say "mitmproxy"
+  if command -v mitmproxy >/dev/null 2>&1; then
+    ok "already installed: $(mitmproxy --version 2>&1 | head -1)"
+  else
+    if command -v asdf >/dev/null 2>&1; then
+      if asdf plugin list 2>/dev/null | grep -q mitmproxy; then
+        asdf install mitmproxy latest && asdf set -u mitmproxy latest
+        ok "installed via asdf"
+      else
+        warn "asdf has no mitmproxy plugin; see docs/install.md"
+      fi
+    else
+      warn "asdf not found; install mitmproxy manually, see docs/install.md"
+    fi
+  fi
+  echo
+fi
+
+# ------------------------------------------------------------- spectral (PyPI)
+say "spectral (snapspecter/mitmproxy-mcp)"
+SPECTRAL_DIR="$HOME/.local/share/uv/tools/mitmproxy-mcp"
+if [ -x "$SPECTRAL_DIR/bin/mitmproxy-mcp" ]; then
+  ok "already installed: $SPECTRAL_DIR/bin/mitmproxy-mcp"
+else
+  if command -v uv >/dev/null 2>&1; then
+    if [ "$CHECK_ONLY" -eq 0 ]; then
+      # "mcp<2" is required: mcp 2.x renamed FastMCP -> MCPServer, and 0.6.1
+      # declared "mcp>=1.25.0" with no upper bound, so a fresh install crashes
+      # with ModuleNotFoundError: mcp.server.fastmcp.
+      uv tool install --with "mcp<2" mitmproxy-mcp
+      ok "installed via uv tool install"
+    else
+      warn "not installed (would install via uv tool install)"
+    fi
+  else
+    warn "uv not found; see docs/install.md"
+  fi
+fi
+echo
+
+# ------------------------------------------------------------------ u33pk
+say "u33pk (u33pk/mitmproxy-mcp)"
+if [ -x "$U33PK_HOME/.venv/bin/mitmproxy-mcp" ]; then
+  ok "already installed: $U33PK_HOME/.venv/bin/mitmproxy-mcp"
+else
+  if [ "$CHECK_ONLY" -eq 0 ]; then
+    if command -v uv >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+      mkdir -p "$(dirname "$U33PK_HOME")"
+      git clone https://github.com/u33pk/mitmproxy-mcp.git "$U33PK_HOME"
+      cd "$U33PK_HOME"
+      uv venv --python 3.13
+      uv pip install -e ".[dev]"
+      # Same mcp<2 pin as spectral -- upstream declares "mcp>=1.28.0" unbounded.
+      uv pip install "mcp<2"
+      ok "installed from source"
+    else
+      warn "uv/git not found; see docs/install.md"
+    fi
+  else
+    warn "not installed (would clone + uv pip install -e)"
+  fi
+fi
+echo
+
+# ---------------------------------------------------------------- wrappers
+say "wrapper scripts"
+mkdir -p "$BIN_DIR" "$STATE_DIR/spectral" "$STATE_DIR/u33pk"
+for w in spectral u33pk; do
+  src="$REPO_ROOT/scripts/wrappers/mitmproxy-mcp-$w"
+  dst="$BIN_DIR/mitmproxy-mcp-$w"
+  if [ "$CHECK_ONLY" -eq 0 ]; then
+    cp "$src" "$dst"
+    chmod +x "$dst"
+    ok "installed $dst"
+  else
+    [ -x "$dst" ] && ok "present $dst" || warn "missing $dst"
+  fi
+done
+echo
+
+# ------------------------------------------------------------------- skill
+say "skill"
+skill_src="$REPO_ROOT/skills/mitmproxy-mcp"
+skill_dst="$SKILL_DIR/mitmproxy-mcp"
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  mkdir -p "$SKILL_DIR"
+  rm -rf "$skill_dst"
+  cp -R "$skill_src" "$skill_dst"
+  ok "installed $skill_dst"
+else
+  [ -d "$skill_dst" ] && ok "present $skill_dst" || warn "missing $skill_dst"
+fi
+echo
+
+# ------------------------------------------------------------- CA reminder
+say "CA certificate"
+if [ -f "$HOME/.mitmproxy/mitmproxy-ca-cert.pem" ]; then
+  ok "CA exists: $HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+  if security dump-trust-settings -d 2>/dev/null | grep -q "mitmproxy"; then
+    ok "CA is trusted by the system keychain"
+  else
+    warn "CA is NOT trusted yet. On macOS run:"
+    echo "      sudo security add-trusted-cert -d -r trustRoot -p ssl \"
+    echo "        -k /Library/Keychains/System.keychain \"
+    echo "        $HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+    echo "      (installing into the login keychain does NOT work for Safari)"
+  fi
+else
+  warn "no CA yet - start a proxy once, it is generated automatically"
+fi
+echo
+
+say "MCP client configuration"
+echo
+echo "Add this to your MCP client config (e.g. Claude Desktop, MCode, Cursor):"
+echo
+echo "{"
+echo "  \"mcpServers\": {"
+echo "    \"mitmproxy-spectral\": {"
+echo "      \"command\": \"$BIN_DIR/mitmproxy-mcp-spectral\","
+echo "      \"args\": []"
+echo "    },"
+echo "    \"mitmproxy-u33pk\": {"
+echo "      \"command\": \"$BIN_DIR/mitmproxy-mcp-u33pk\","
+echo "      \"args\": []"
+echo "    }"
+echo "  }"
+echo "}"
+echo
+echo "Ports: spectral=8081, u33pk=8082, u33pk mitmweb=8083."
+echo "Always pass the port explicitly when starting a proxy."
+echo

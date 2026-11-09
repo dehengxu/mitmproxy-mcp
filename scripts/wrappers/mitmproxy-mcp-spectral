@@ -1,0 +1,32 @@
+#!/bin/bash
+# Wrapper for snapspecter/mitmproxy-mcp (Spectral).
+#
+# Two jobs:
+#   1. Pin the working directory, so its SQLite traffic db (mitm_mcp_traffic.db,
+#      whose path is hardcoded relative to CWD) never lands in an arbitrary
+#      project folder.
+#   2. Pin the default proxy port to 8081, so it cannot collide with the u33pk
+#      instance (which uses 8082).
+#
+# Note: Spectral has no --port CLI flag. The proxy port is chosen per
+# start_proxy(port=...) call at runtime. MITMPROXY_DEFAULT_PORT is exported for
+# the wrapper skill / caller to read; the server itself ignores it.
+set -euo pipefail
+
+STATE_DIR="${MITMPROXY_MCP_STATE_DIR:-$HOME/.local/state/mitmproxy-mcp/spectral}"
+mkdir -p "$STATE_DIR"
+cd "$STATE_DIR"
+
+export MITMPROXY_DEFAULT_PORT="${MITMPROXY_DEFAULT_PORT:-8081}"
+export MITMPROXY_MCP_FLAVOR="spectral"
+
+# Override to point at a different Spectral install.
+SPECTRAL_BIN="${SPECTRAL_BIN:-$HOME/.local/share/uv/tools/mitmproxy-mcp/bin/mitmproxy-mcp}"
+
+if [ ! -x "$SPECTRAL_BIN" ]; then
+  echo "mitmproxy-mcp-spectral: cannot find Spectral executable at $SPECTRAL_BIN" >&2
+  echo "Set SPECTRAL_BIN to override. See docs/install.md." >&2
+  exit 1
+fi
+
+exec "$SPECTRAL_BIN" "$@"
