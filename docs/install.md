@@ -106,6 +106,16 @@ security dump-trust-settings -d | grep -A2 mitmproxy
 
 wrapper 也支持用 `SPECTRAL_BIN` / `U33PK_BIN` 指向别处的可执行文件。
 
+## 启用 CI（可选）
+
+仓库带一份 GitHub Actions workflow（`scripts/ci.yml`），默认不在 git 里——推送
+`.github/workflows/*` 需要 token 带 `workflow` scope，缺 scope 时 GitHub 会拒绝 push。
+
+```bash
+gh auth refresh -h github.com -s workflow
+./scripts/enable-ci.sh
+```
+
 ## 卸载
 
 ```bash

@@ -40,6 +40,24 @@ cd mitmproxy-mcp
 3. **依赖约束收紧**：u33pk 的 `mcp>=1.28.0` 没有上限，而 `mcp 2.x` 把 `FastMCP` 改名为 `MCPServer`，装上即崩。已收紧为 `mcp>=1.28.0,<2.0.0`。
 4. **统一 skill**：`skills/mitmproxy-mcp/` 一份 skill 覆盖两个 server，含端口表、选型建议与两边各自的参数坑。
 
+## CI
+
+仓库带一份 GitHub Actions workflow（`scripts/ci.yml`）：静态检查 + map 工具回归测试。
+
+它默认**不在 git 里**，因为推送 `.github/workflows/*` 要求 token 带 `workflow` scope，
+缺 scope 时 GitHub 会直接拒绝 push。恢复方式：
+
+```bash
+gh auth refresh -h github.com -s workflow   # 一次性授权
+./scripts/enable-ci.sh                        # 恢复并推送 workflow
+```
+
+回归测试也可以本地直接跑：
+
+```bash
+python3 scripts/test_map_tools.py ~/.local/bin/mitmproxy-mcp-u33pk
+```
+
 ## 目录结构
 
 ```

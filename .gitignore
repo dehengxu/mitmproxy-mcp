@@ -12,5 +12,9 @@ mitm_mcp_traffic.db-journal
 # mitmproxy state
 .mitmproxy/
 
+# GitHub Actions workflow is kept out of git: pushing .github/workflows/*
+# requires a token with the `workflow` scope. Restore with scripts/enable-ci.sh.
+.github/
+
 # OS
 .DS_Store
