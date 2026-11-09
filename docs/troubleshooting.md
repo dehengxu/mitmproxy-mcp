@@ -84,6 +84,12 @@ uv pip install -e ".[dev]"
 
 **修复**：用 PyPI 路线装（requires-python >= 3.12），插件的 `install_version` 改为建 venv + `pip install` + 建 shim。见 [README](../README.md) 的致谢部分与本仓库 issue。
 
+## mitmweb 打开 403 Forbidden
+
+**原因**：mitmproxy 12.x 起 mitmweb 默认开启 token 鉴权，不带 token 访问 `http://127.0.0.1:8083/` 直接 403。
+
+**修复**：用 `u33pk_proxy_ctl(cmd="start", ..., webui=True)` 返回的 `web_url` 字段（形如 `http://127.0.0.1:8083/?token=<hex>`）。token 随代理重启变化，忘记时调 `u33pk_proxy_ctl(cmd="status")` 取最新 `web_url`。
+
 ## `crypt_ctl` 加载脚本报错
 
 `u33pk_crypt_ctl(cmd="load")` 会执行指定路径的 Python 代码，只加载可信脚本。报错可查 `mitmproxy://crypto/scripts` resource 看错误计数与最近错误。

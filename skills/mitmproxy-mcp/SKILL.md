@@ -37,6 +37,7 @@ description: 用 mitmproxy MCP server 抓取、检查、重放、修改 HTTP/HTT
 - spectral：`spectral_start_proxy(port=8081)`
 - u33pk：`u33pk_proxy_ctl(cmd="start", port=8082, host="127.0.0.1")`
 - u33pk 开图形界面：`u33pk_proxy_ctl(cmd="start", port=8082, webui=True, web_port=8083)`
+- **mitmweb 有 token 鉴权**（mitmproxy 12.x 默认开启）：裸访问 `http://127.0.0.1:8083/` 返回 403。用启动结果里的 `web_url`（带 `?token=...`）打开；token 随重启变化，随时 `u33pk_proxy_ctl(cmd="status")` 取最新 `web_url`
 
 两个代理可同时运行，各自独立抓包，互不串流（已实测）。
 

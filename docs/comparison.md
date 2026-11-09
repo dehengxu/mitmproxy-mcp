@@ -36,7 +36,7 @@
 | `websocket_ctl` | WebSocket 列表、注入、主动连接、消息级规则（drop/改写） |
 | `crypt_ctl` | 加载自定义加解密脚本（用户态加密应用，如前端 JS 加密） |
 | `mock_server_ctl` | 用已抓流量起本地 mock server（实测 `mocked_flows=1`） |
-| `proxy_ctl(cmd="start", webui=True)` | 起 mitmweb 图形界面 |
+| `proxy_ctl(cmd="start", webui=True)` | 起 mitmweb 图形界面（返回的 `web_url` 带 token，12.x 需 token 才能打开） |
 | `capture_rule_ctl` | 按 filter 只抓特定域名 |
 | `ca_ctl` | 导出 CA、配置上游 CA、mTLS 客户端证书 |
 | `http_ctl(cmd="export_har")` | 导出 HAR，兼容 Chrome DevTools / Charles |
