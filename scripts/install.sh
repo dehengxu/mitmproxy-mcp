@@ -46,19 +46,21 @@ echo
 if [ "$UNINSTALL" -eq 1 ]; then
   say "uninstall"
   if [ "$CHECK_ONLY" -eq 0 ]; then
-    rm -f "$BIN_DIR/mitmproxy-mcp-spectral" \
-          "$BIN_DIR/mitmproxy-mcp-u33pk" \
-          "$BIN_DIR/mitmproxy-mcp-unified" \
-          "$BIN_DIR/mitmproxy_mcp_unified.py" \
-          "$BIN_DIR/mitmproxy-mcp-spectral-upstream" \
-          "$BIN_DIR/mitmproxy-mcp-u33pk-upstream"
-    ok "removed wrappers, aggregator and upstream links from $BIN_DIR"
-    rm -rf "$STATE_DIR"
-    ok "removed state dir $STATE_DIR"
-    rm -rf "$SKILL_DIR/mitmproxy-mcp"
-    ok "removed skill $SKILL_DIR/mitmproxy-mcp"
-    rm -rf "$U33PK_HOME"
-    ok "removed u33pk source install $U33PK_HOME"
+    for f in mitmproxy-mcp-spectral mitmproxy-mcp-u33pk mitmproxy-mcp-unified \
+             mitmproxy_mcp_unified.py mitmproxy-mcp-spectral-upstream \
+             mitmproxy-mcp-u33pk-upstream; do
+      if rm -f "$BIN_DIR/$f" 2>/dev/null; then
+        ok "removed $BIN_DIR/$f"
+      else
+        warn "could not remove $BIN_DIR/$f"
+      fi
+    done
+    rm -rf "$STATE_DIR" 2>/dev/null && ok "removed state dir $STATE_DIR" \
+      || warn "could not remove $STATE_DIR"
+    rm -rf "$SKILL_DIR/mitmproxy-mcp" 2>/dev/null && ok "removed skill $SKILL_DIR/mitmproxy-mcp" \
+      || warn "could not remove $SKILL_DIR/mitmproxy-mcp"
+    rm -rf "$U33PK_HOME" 2>/dev/null && ok "removed u33pk source install $U33PK_HOME" \
+      || warn "could not remove $U33PK_HOME"
     if command -v uv >/dev/null 2>&1; then
       if uv tool uninstall mitmproxy-mcp >/dev/null 2>&1; then
         ok "removed uv tool mitmproxy-mcp (spectral)"
@@ -135,10 +137,14 @@ else
       mkdir -p "$(dirname "$U33PK_HOME")"
       # Install from the vendored tree in this repo, which carries our fixes
       # (map_*_ctl double-unpack bug + the mcp<2 pin). See docs/upstream-fixes.md.
-      rm -rf "$U33PK_HOME"
-      cp -R "$REPO_ROOT/u33pk" "$U33PK_HOME"
+      # Copy over the existing tree instead of deleting it first: the copy is
+      # idempotent and there is no window where a half-removed install breaks.
+      mkdir -p "$U33PK_HOME"
+      cp -R "$REPO_ROOT/u33pk/." "$U33PK_HOME/"
       cd "$U33PK_HOME"
-      uv venv --python 3.13
+      # --clear: a stale .venv makes uv venv fail, which is exactly what a
+      # re-install has to survive.
+      uv venv --python 3.13 --clear
       uv pip install -e ".[dev]"
       # Same mcp<2 pin as spectral -- upstream declares "mcp>=1.28.0" unbounded.
       uv pip install "mcp<2"
@@ -202,8 +208,8 @@ skill_src="$REPO_ROOT/skills/mitmproxy-mcp"
 skill_dst="$SKILL_DIR/mitmproxy-mcp"
 if [ "$CHECK_ONLY" -eq 0 ]; then
   mkdir -p "$SKILL_DIR"
-  rm -rf "$skill_dst"
-  cp -R "$skill_src" "$skill_dst"
+  mkdir -p "$skill_dst"
+  cp -R "$skill_src/." "$skill_dst/"
   ok "installed $skill_dst"
 else
   [ -d "$skill_dst" ] && ok "present $skill_dst" || warn "missing $skill_dst"
