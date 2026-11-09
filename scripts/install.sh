@@ -116,6 +116,17 @@ for w in spectral u33pk; do
     [ -x "$dst" ] && ok "present $dst" || warn "missing $dst"
   fi
 done
+
+# The unified entry: one MCP server exposing both upstreams.
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  cp "$REPO_ROOT/scripts/mitmproxy_mcp_unified.py" "$BIN_DIR/mitmproxy_mcp_unified.py"
+  cp "$REPO_ROOT/scripts/wrappers/mitmproxy-mcp-unified" "$BIN_DIR/mitmproxy-mcp-unified"
+  chmod +x "$BIN_DIR/mitmproxy-mcp-unified"
+  ok "installed $BIN_DIR/mitmproxy-mcp-unified"
+else
+  [ -x "$BIN_DIR/mitmproxy-mcp-unified" ] && ok "present $BIN_DIR/mitmproxy-mcp-unified" \
+    || warn "missing $BIN_DIR/mitmproxy-mcp-unified"
+fi
 echo
 
 # ------------------------------------------------------------------- skill
@@ -156,17 +167,14 @@ echo "Add this to your MCP client config (e.g. Claude Desktop, MCode, Cursor):"
 echo
 echo "{"
 echo "  \"mcpServers\": {"
-echo "    \"mitmproxy-spectral\": {"
-echo "      \"command\": \"$BIN_DIR/mitmproxy-mcp-spectral\","
-echo "      \"args\": []"
-echo "    },"
-echo "    \"mitmproxy-u33pk\": {"
-echo "      \"command\": \"$BIN_DIR/mitmproxy-mcp-u33pk\","
+echo "    \"mitmproxy-mcp\": {"
+echo "      \"command\": \"$BIN_DIR/mitmproxy-mcp-unified\","
 echo "      \"args\": []"
 echo "    }"
 echo "  }"
 echo "}"
 echo
+echo "One entry, 37 tools: spectral_<tool> and u33pk_<tool>."
 echo "Ports: spectral=8081, u33pk=8082, u33pk mitmweb=8083."
 echo "Always pass the port explicitly when starting a proxy."
 echo

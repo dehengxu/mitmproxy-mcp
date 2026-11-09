@@ -47,6 +47,30 @@ ModuleNotFoundError: No module named 'mcp.server.fastmcp'
 
 ## MCP 客户端配置
 
+### 统一入口（推荐）
+
+一个条目暴露两套后端的全部 37 个工具，工具名带来源前缀：
+
+```json
+{
+  "mcpServers": {
+    "mitmproxy-mcp": {
+      "command": "~/.local/bin/mitmproxy-mcp-unified",
+      "args": []
+    }
+  }
+}
+```
+
+| 前缀 | 后端 | 工具数 |
+|---|---|---|
+| `spectral_` | snapspecter/mitmproxy-mcp | 25 |
+| `u33pk_` | u33pk/mitmproxy-mcp | 12 |
+
+### 两个独立入口
+
+功能等价，只是不用带前缀：
+
 脚本结束时会打印可直接粘贴的配置：
 
 ```json

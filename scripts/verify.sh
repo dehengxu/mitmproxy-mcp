@@ -14,7 +14,7 @@ bad()  { printf '  \033[0;31m\xe2\x9c\x97\033[0m %s\n' "$*"; fail=1; }
 warn() { printf '  \033[0;33m!\033[0m %s\n' "$*"; }
 
 say "wrappers"
-for w in spectral u33pk; do
+for w in spectral u33pk unified; do
   if [ -x "$BIN_DIR/mitmproxy-mcp-$w" ]; then
     ok "$BIN_DIR/mitmproxy-mcp-$w exists and is executable"
   else
@@ -24,7 +24,7 @@ done
 echo
 
 say "tools/list"
-for w in spectral u33pk; do
+for w in unified spectral u33pk; do
   cmd="$BIN_DIR/mitmproxy-mcp-$w"
   if [ ! -x "$cmd" ]; then
     bad "skipped $w (wrapper missing)"

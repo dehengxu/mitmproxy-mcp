@@ -2,6 +2,9 @@
 
 两个实现**功能互补**，不是二选一。以下全部为真实抓包实测结论。
 
+> 通过统一入口 `mitmproxy-mcp` 使用时，工具名分别带 `spectral_` / `u33pk_` 前缀
+> （如 `spectral_start_proxy`、`u33pk_http_ctl`）。下文表格里的工具名省略了前缀。
+
 ## 总览
 
 | 维度 | Spectral | u33pk |

@@ -12,6 +12,32 @@
 
 两者**不是二选一**——功能互补，可同时运行，端口隔离互不串流。
 
+## 统一入口（推荐）
+
+本仓库提供**单一 MCP 入口**，同时挂起两套后端，共 37 个工具：
+
+| 前缀 | 后端 | 工具数 | 独有能力 |
+|---|---|---|---|
+| `spectral_` | snapspecter/mitmproxy-mcp | 25 | OpenAPI 导出、认证模式检测、爬虫代码生成、fuzzing、会话变量 |
+| `u33pk_` | u33pk/mitmproxy-mcp | 12 | WebSocket 注入、自定义加解密、mock server、mitmweb 图形界面、只读 resource |
+
+工具名带来源前缀，调用时必须带（如 `spectral_start_proxy(port=8081)`、`u33pk_proxy_ctl(cmd="start", port=8082)`）。
+
+两个后端各自保持独立代理端口，抓包会话互不干扰。
+
+```json
+{
+  "mcpServers": {
+    "mitmproxy-mcp": {
+      "command": "~/.local/bin/mitmproxy-mcp-unified",
+      "args": []
+    }
+  }
+}
+```
+
+也可以继续用两个独立入口（`mitmproxy-mcp-spectral` / `mitmproxy-mcp-u33pk`），功能等价，只是不用带前缀。
+
 ## 快速开始
 
 ```bash

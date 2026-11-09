@@ -1,0 +1,51 @@
+#!/bin/bash
+# Unified mitmproxy MCP entry point.
+#
+# Starts both upstream servers (Spectral on proxy port 8081, u33pk on 8082)
+# and exposes their tools through a single MCP server:
+#   spectral_<tool>  ->  snapspecter/mitmproxy-mcp
+#   u33pk_<tool>     ->  u33pk/mitmproxy-mcp
+#
+# Both upstreams keep their own proxy port, so capture sessions stay isolated.
+set -euo pipefail
+
+STATE_DIR="${MITMPROXY_MCP_STATE_DIR:-$HOME/.local/state/mitmproxy-mcp}"
+mkdir -p "$STATE_DIR"
+cd "$STATE_DIR"
+
+# The upstream wrappers already pin each server's own state dir and port.
+export SPECTRAL_BIN="${SPECTRAL_BIN:-$HOME/.local/bin/mitmproxy-mcp-spectral}"
+export U33PK_BIN="${U33PK_BIN:-$HOME/.local/bin/mitmproxy-mcp-u33pk}"
+
+# Python that has the mcp SDK installed.
+MITMPROXY_MCP_PYTHON="${MITMPROXY_MCP_PYTHON:-}"
+if [ -z "$MITMPROXY_MCP_PYTHON" ]; then
+  for candidate in \
+    "$HOME/.local/share/uv/tools/mitmproxy-mcp/bin/python" \
+    "$HOME/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk/.venv/bin/python" \
+    "$(command -v python3 || true)"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      if "$candidate" -c "import mcp" >/dev/null 2>&1; then
+        MITMPROXY_MCP_PYTHON="$candidate"
+        break
+      fi
+    fi
+  done
+fi
+
+if [ -z "$MITMPROXY_MCP_PYTHON" ]; then
+  echo "mitmproxy-mcp: no python with the mcp SDK found." >&2
+  echo "Set MITMPROXY_MCP_PYTHON to a python that can 'import mcp'." >&2
+  exit 1
+fi
+
+# Locate the aggregator script. It is installed alongside this wrapper.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_SCRIPT="${MITMPROXY_MCP_SERVER_SCRIPT:-$SCRIPT_DIR/mitmproxy_mcp_unified.py}"
+
+if [ ! -f "$SERVER_SCRIPT" ]; then
+  echo "mitmproxy-mcp: aggregator script not found at $SERVER_SCRIPT" >&2
+  exit 1
+fi
+
+exec "$MITMPROXY_MCP_PYTHON" "$SERVER_SCRIPT" "$@"

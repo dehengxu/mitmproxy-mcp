@@ -1,4 +1,4 @@
-name: ci
+# name: ci
 
 on:
   push:
@@ -52,3 +52,18 @@ jobs:
 
       - name: map tools must not raise on add
         run: python scripts/test_map_tools.py
+
+  unified-entry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: install mcp sdk
+        run: python -m pip install "mcp<2"
+
+      - name: unified entry merges and routes two upstreams
+        run: python scripts/test_unified_merging.py
