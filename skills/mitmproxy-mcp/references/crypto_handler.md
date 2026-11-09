@@ -2,9 +2,13 @@
 
 This reference explains how to write Python scripts that `crypt_ctl` can load to transparently decrypt and encrypt HTTP/WebSocket traffic.
 
+> **调用方式**：本文中的 `crypt_ctl` / `http_ctl` / `flow_action` 是上游源码里的原始名称。
+> 通过统一入口 `mitmproxy-mcp` 调用时需加 `u33pk_` 前缀，如 `u33pk_crypt_ctl(cmd="load", ...)`。
+> 用独立入口 `mitmproxy-mcp-u33pk` 时不加前缀。
+
 ## When to use
 
-Use a `CryptoHandler` when the target application encrypts request/response bodies in user space (e.g. front-end JavaScript, mobile apps, proprietary protocols). Once loaded, `http_ctl get` shows decrypted plaintext and `flow_action(action="update", decrypted_request_body=...)` + `flow_action(action="replay")` automatically re-encrypts.
+Use a `CryptoHandler` when the target application encrypts request/response bodies in user space (e.g. front-end JavaScript, mobile apps, proprietary protocols). Once loaded, `u33pk_http_ctl(cmd="get")` shows decrypted plaintext and `u33pk_flow_action(action="update", decrypted_request_body=...)` + `u33pk_flow_action(action="replay")` automatically re-encrypts.
 
 ## Minimal script
 
@@ -41,7 +45,7 @@ class XorHandler(CryptoHandler):
 Save as `my_crypto.py` and load with:
 
 ```python
-crypt_ctl(cmd="load", script_path="/path/to/my_crypto.py")
+u33pk_crypt_ctl(cmd="load", script_path="/path/to/my_crypto.py")
 ```
 
 ## `CryptoHandler` interface
@@ -289,7 +293,7 @@ Never raise exceptions from handler methods. Instead return:
 return CryptoResult(error="reason")
 ```
 
-The error appears in `crypt_ctl(cmd="status", script_id="...")` and is logged.
+The error appears in `u33pk_crypt_ctl(cmd="status", script_id="...")` and is logged.
 
 ## Security warning
 

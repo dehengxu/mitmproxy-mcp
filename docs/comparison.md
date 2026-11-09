@@ -3,7 +3,8 @@
 两个实现**功能互补**，不是二选一。以下全部为真实抓包实测结论。
 
 > 通过统一入口 `mitmproxy-mcp` 使用时，工具名分别带 `spectral_` / `u33pk_` 前缀
-> （如 `spectral_start_proxy`、`u33pk_http_ctl`）。下文表格里的工具名省略了前缀。
+> （如 `spectral_start_proxy`、`u33pk_http_ctl`）。下文表格大多省略前缀；
+> 标了前缀的地方即为统一入口下的真实调用名。
 
 ## 总览
 
@@ -14,7 +15,7 @@
 | 工具风格 | 一函数一动作，参数直白 | `xxx_ctl(cmd=..., ...)` 复合式 |
 | flow 标识 | UUID 字符串 | 整数 `store_id`（另附 UUID） |
 | 状态存储 | SQLite `mitm_mcp_traffic.db`（路径硬编码在 CWD） | 内存 + 可导出 .mitm / HAR |
-| 安装方式 | PyPI（`uv tool install`） | 源码（`uv pip install -e`） |
+| 安装方式 | vendored 源码（`uv tool install ./spectral`） | vendored 源码（`uv pip install -e`） |
 
 ## Spectral 独有的能力
 
@@ -35,12 +36,12 @@
 | `websocket_ctl` | WebSocket 列表、注入、主动连接、消息级规则（drop/改写） |
 | `crypt_ctl` | 加载自定义加解密脚本（用户态加密应用，如前端 JS 加密） |
 | `mock_server_ctl` | 用已抓流量起本地 mock server（实测 `mocked_flows=1`） |
-| `u33pk_proxy_ctl(cmd="start", webui=True)` | 起 mitmweb 图形界面 |
+| `proxy_ctl(cmd="start", webui=True)` | 起 mitmweb 图形界面 |
 | `capture_rule_ctl` | 按 filter 只抓特定域名 |
 | `ca_ctl` | 导出 CA、配置上游 CA、mTLS 客户端证书 |
-| `u33pk_http_ctl(cmd="export_har")` | 导出 HAR，兼容 Chrome DevTools / Charles |
-| `u33pk_http_ctl(cmd="load")` | 加载 .mitm 文件做离线分析 |
-| `u33pk_proxy_ctl(extra_options={"mode":["wireguard"]})` | WireGuard 透明代理，能抓 iOS/Android 的 QUIC/HTTP3 |
+| `http_ctl(cmd="export_har")` | 导出 HAR，兼容 Chrome DevTools / Charles |
+| `http_ctl(cmd="load")` | 加载 .mitm 文件做离线分析 |
+| `proxy_ctl(extra_options={"mode":["wireguard"]})` | WireGuard 透明代理，能抓 iOS/Android 的 QUIC/HTTP3 |
 | `mitmproxy://flows/latest` 等 7 个 resource | 只读读取状态/流量/规则/事件，省 token |
 
 ### u33pk 的只读 MCP resource
@@ -84,6 +85,6 @@
 
 ## 通用提示
 
-- **任何参数报错，先调 `tool_info(tool_name, cmd)`**（u33pk 提供），它返回该命令的必填参数和示例，比猜快得多。
+- **任何参数报错，先调 `u33pk_tool_info(tool_name, cmd)`**（u33pk 提供），它返回该命令的必填参数和示例，比猜快得多。
 - 抓大 body 时用 `max_content_size` 限制，避免撑爆上下文。
 - 看流量协议细节读 `flow["protocol"]`（HTTP 版本、ALPN、TLS 版本、SNI）。

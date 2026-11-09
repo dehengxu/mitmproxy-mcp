@@ -4,13 +4,20 @@
 
 **原因**：`mcp` 2.x 把 `FastMCP` 改名 `MCPServer`，两个上游用的都是 v1 API。两个上游都只声明 `mcp>=1.x` 无上限，装 2.x 必崩。
 
-**修复**：
+**修复**：从本仓库 vendored 源码重装两个后端，一条命令：
 
 ```bash
-# spectral
-uv tool install --reinstall --with "mcp<2" mitmproxy-mcp
+cd <本仓库路径>
+./scripts/install.sh --force
+```
 
-# u33pk
+手工等价命令：
+
+```bash
+# spectral（vendored 0.8.0 已 pin mcp<2）
+uv tool install --reinstall --with "mcp<2" ./spectral
+
+# u33pk（已安装目录）
 cd ~/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk
 uv pip install "mcp<2"
 ```
@@ -79,15 +86,15 @@ uv pip install -e ".[dev]"
 
 ## `crypt_ctl` 加载脚本报错
 
-`crypt_ctl(cmd="load")` 会执行指定路径的 Python 代码，只加载可信脚本。报错可查 `mitmproxy://crypto/scripts` resource 看错误计数与最近错误。
+`u33pk_crypt_ctl(cmd="load")` 会执行指定路径的 Python 代码，只加载可信脚本。报错可查 `mitmproxy://crypto/scripts` resource 看错误计数与最近错误。
 
 ## 抓不到手机流量
 
 u33pk 支持 WireGuard 透明代理模式，能捕获 QUIC/HTTP3：
 
 ```python
-proxy_ctl(cmd="start", host="0.0.0.0", port=51820, extra_options={"mode": ["wireguard"]})
-proxy_ctl(cmd="wireguard_config")   # 返回给客户端的 wireguard_config INI
+u33pk_proxy_ctl(cmd="start", host="0.0.0.0", port=51820, extra_options={"mode": ["wireguard"]})
+u33pk_proxy_ctl(cmd="wireguard_config")   # 返回给客户端的 wireguard_config INI
 ```
 
 客户端需信任 mitmproxy CA 才能解密。

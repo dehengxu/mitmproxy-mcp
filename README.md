@@ -87,9 +87,62 @@ cd mitmproxy-mcp
 
 启动代理时**必须显式传端口**，不要用默认 8080。
 
+## 最小可跑示例
+
+从零到抓到一条流量，五步：
+
+```bash
+# 1. 安装 + 自检
+git clone https://github.com/dehengxu/mitmproxy-mcp.git
+cd mitmproxy-mcp
+./scripts/install.sh && ./scripts/verify.sh
+```
+
+```json
+// 2. 注册到 MCP 客户端（command 用绝对路径，客户端不展开 ~）
+{
+  "mcpServers": {
+    "mitmproxy-mcp": {
+      "command": "/Users/you/.local/bin/mitmproxy-mcp-unified",
+      "args": []
+    }
+  }
+}
+```
+
+```python
+# 3. 启动代理（两套后端任选或同时开；端口必须显式传，不要用默认 8080）
+spectral_start_proxy(port=8081)                            # spectral 后端
+u33pk_proxy_ctl(cmd="start", port=8082, host="127.0.0.1")  # u33pk 后端
+```
+
+```bash
+# 4. 让流量走代理（CA 已装进系统钥匙串时可省 --cacert）
+curl --cacert ~/.mitmproxy/mitmproxy-ca-cert.pem -x http://127.0.0.1:8081 https://example.com
+```
+
+```python
+# 5. 看流量、然后停掉
+spectral_get_traffic_summary(limit=20)   # spectral 视角
+u33pk_http_ctl(cmd="list", limit=20)     # u33pk 视角
+spectral_stop_proxy()
+u33pk_proxy_ctl(cmd="stop")
+```
+
+> 首次使用建议先只起一个后端。确认链路通畅后再叠加第二个——两个代理端口不同，
+> 抓包会话互不串流，但同时开着会多占一份内存与一次 CA 协商。
+
+## 重新安装与卸载
+
+```bash
+./scripts/install.sh --force      # 从 vendored 源码重装两个后端（修复环境损坏用）
+./scripts/install.sh --uninstall  # 卸载本脚本装过的全部东西
+./scripts/install.sh --check      # 只报告现状，不做任何改动
+```
+
 ## 本仓库做的整合工作
 
-1. **端口隔离**：`scripts/wrappers/` 下两个 wrapper 脚本，各自固定工作目录（避免状态文件乱落）与默认端口。
+1. **端口隔离与可移植**：`scripts/wrappers/` 下三个 wrapper（两个独立入口 + 一个统一入口），各自把工作目录固定到 `~/.local/state/mitmproxy-mcp/<flavor>/`（避免状态文件乱落），并通过同目录软链自定位上游可执行文件——wrapper 复制到任意目录都能工作。
 2. **上游 bug 修复**：u33pk 的 `map_local_ctl` / `map_remote_ctl` 100% 崩溃，根因是 FastMCP 已把 JSON dict 校验成 pydantic 模型，函数体内又 `**rule` 二次解包。已改为 `model_validate(rule)`（同时兼容模型实例与 dict）。见 [docs/upstream-fixes.md](docs/upstream-fixes.md)。
 3. **依赖约束收紧**：u33pk 的 `mcp>=1.28.0` 没有上限，而 `mcp 2.x` 把 `FastMCP` 改名为 `MCPServer`，装上即崩。已收紧为 `mcp>=1.28.0,<2.0.0`。
 4. **统一 skill**：`skills/mitmproxy-mcp/` 一份 skill 覆盖两个 server，含端口表、选型建议与两边各自的参数坑。
@@ -128,13 +181,14 @@ python3 scripts/test_map_tools.py ~/.local/bin/mitmproxy-mcp-u33pk
 ```
 mitmproxy-mcp/
 ├── UPSTREAM.md          # 上游引用记录：基线 commit、补丁清单、同步流程
+├── NOTICE.md            # 第三方归属声明
 ├── spectral/            # 上游 A 源码（snapspecter, MIT）
 ├── u33pk/               # 上游 B 源码（u33pk, MIT，含本仓库的修复）
 ├── skills/
 │   └── mitmproxy-mcp/   # 统一 skill（装到 ~/.agents/skills/）
 ├── scripts/
 │   ├── install.sh       # 一键安装
-│   ├── wrappers/        # 两个 wrapper 脚本
+│   ├── wrappers/        # 三个 wrapper 脚本（spectral / u33pk / unified）
 │   └── verify.sh        # 装完自检
 └── docs/
     ├── install.md       # 安装与配置

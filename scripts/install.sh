@@ -5,6 +5,8 @@
 #   ./scripts/install.sh                 # install everything
 #   ./scripts/install.sh --no-mitmproxy  # skip installing mitmproxy itself
 #   ./scripts/install.sh --check         # report what is present, change nothing
+#   ./scripts/install.sh --force         # re-install both backends from vendored source
+#   ./scripts/install.sh --uninstall     # remove everything this script installed
 #
 # Idempotent: safe to re-run.
 set -euo pipefail
@@ -17,11 +19,15 @@ U33PK_HOME="${U33PK_HOME:-$HOME/Projects/personal/mcp-servers/mitmproxy-mcp-u33p
 
 CHECK_ONLY=0
 INSTALL_MITMPROXY=1
+FORCE=0
+UNINSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --check) CHECK_ONLY=1 ;;
     --no-mitmproxy) INSTALL_MITMPROXY=0 ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    --force) FORCE=1 ;;
+    --uninstall) UNINSTALL=1 ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -35,6 +41,40 @@ echo
 say "mitmproxy-mcp installer"
 echo "  repo: $REPO_ROOT"
 echo
+
+# --------------------------------------------------------------- uninstall
+if [ "$UNINSTALL" -eq 1 ]; then
+  say "uninstall"
+  if [ "$CHECK_ONLY" -eq 0 ]; then
+    rm -f "$BIN_DIR/mitmproxy-mcp-spectral" \
+          "$BIN_DIR/mitmproxy-mcp-u33pk" \
+          "$BIN_DIR/mitmproxy-mcp-unified" \
+          "$BIN_DIR/mitmproxy_mcp_unified.py" \
+          "$BIN_DIR/mitmproxy-mcp-spectral-upstream" \
+          "$BIN_DIR/mitmproxy-mcp-u33pk-upstream"
+    ok "removed wrappers, aggregator and upstream links from $BIN_DIR"
+    rm -rf "$STATE_DIR"
+    ok "removed state dir $STATE_DIR"
+    rm -rf "$SKILL_DIR/mitmproxy-mcp"
+    ok "removed skill $SKILL_DIR/mitmproxy-mcp"
+    rm -rf "$U33PK_HOME"
+    ok "removed u33pk source install $U33PK_HOME"
+    if command -v uv >/dev/null 2>&1; then
+      if uv tool uninstall mitmproxy-mcp >/dev/null 2>&1; then
+        ok "removed uv tool mitmproxy-mcp (spectral)"
+      else
+        warn "uv tool mitmproxy-mcp was not installed"
+      fi
+    fi
+    echo
+    echo "Left untouched: mitmproxy itself, ~/.mitmproxy (CA), and any other uv tool."
+  else
+    echo "  would remove: wrappers+links in $BIN_DIR, $STATE_DIR,"
+    echo "                $SKILL_DIR/mitmproxy-mcp, $U33PK_HOME, uv tool mitmproxy-mcp"
+  fi
+  echo
+  exit 0
+fi
 
 # ---------------------------------------------------------------- mitmproxy
 if [ "$INSTALL_MITMPROXY" -eq 1 ]; then
@@ -56,10 +96,10 @@ if [ "$INSTALL_MITMPROXY" -eq 1 ]; then
   echo
 fi
 
-# ------------------------------------------------------------- spectral (PyPI)
+# ------------------------------------------------- spectral (vendored source)
 say "spectral (snapspecter/mitmproxy-mcp)"
 SPECTRAL_DIR="$HOME/.local/share/uv/tools/mitmproxy-mcp"
-if [ -x "$SPECTRAL_DIR/bin/mitmproxy-mcp" ]; then
+if [ -x "$SPECTRAL_DIR/bin/mitmproxy-mcp" ] && [ "$FORCE" -eq 0 ]; then
   ok "already installed: $SPECTRAL_DIR/bin/mitmproxy-mcp"
 else
   if command -v uv >/dev/null 2>&1; then
@@ -69,10 +109,15 @@ else
       # renamed FastMCP -> MCPServer, so that install crashes with
       # ModuleNotFoundError: mcp.server.fastmcp. The vendored 0.8.0 already
       # pins mcp>=1.25.0,<2.0.0.
-      uv tool install --with "mcp<2" "$REPO_ROOT/spectral"
-      ok "installed from vendored source via uv tool install"
+      if [ "$FORCE" -eq 1 ]; then
+        uv tool install --reinstall --with "mcp<2" "$REPO_ROOT/spectral"
+        ok "reinstalled from vendored source (uv tool install --reinstall)"
+      else
+        uv tool install --with "mcp<2" "$REPO_ROOT/spectral"
+        ok "installed from vendored source via uv tool install"
+      fi
     else
-      warn "not installed (would install via uv tool install)"
+      warn "not installed (would install from vendored source via uv tool install)"
     fi
   else
     warn "uv not found; see docs/install.md"
@@ -82,7 +127,7 @@ echo
 
 # ------------------------------------------------------------------ u33pk
 say "u33pk (u33pk/mitmproxy-mcp)"
-if [ -x "$U33PK_HOME/.venv/bin/mitmproxy-mcp" ]; then
+if [ -x "$U33PK_HOME/.venv/bin/mitmproxy-mcp" ] && [ "$FORCE" -eq 0 ]; then
   ok "already installed: $U33PK_HOME/.venv/bin/mitmproxy-mcp"
 else
   if [ "$CHECK_ONLY" -eq 0 ]; then
@@ -97,19 +142,25 @@ else
       uv pip install -e ".[dev]"
       # Same mcp<2 pin as spectral -- upstream declares "mcp>=1.28.0" unbounded.
       uv pip install "mcp<2"
-      ok "installed from vendored source (patched)"
+      if [ "$FORCE" -eq 1 ]; then
+        ok "reinstalled from vendored source (patched)"
+      else
+        ok "installed from vendored source (patched)"
+      fi
     else
       warn "uv not found; see docs/install.md"
     fi
   else
-    warn "not installed (would clone + uv pip install -e)"
+    warn "not installed (would copy vendored source + uv pip install -e)"
   fi
 fi
 echo
 
 # ---------------------------------------------------------------- wrappers
 say "wrapper scripts"
-mkdir -p "$BIN_DIR" "$STATE_DIR/spectral" "$STATE_DIR/u33pk"
+if [ "$CHECK_ONLY" -eq 0 ]; then
+  mkdir -p "$BIN_DIR" "$STATE_DIR/spectral" "$STATE_DIR/u33pk"
+fi
 for w in spectral u33pk; do
   src="$REPO_ROOT/scripts/wrappers/mitmproxy-mcp-$w"
   dst="$BIN_DIR/mitmproxy-mcp-$w"

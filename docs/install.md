@@ -7,7 +7,7 @@
 | Python 3.13+ | 两个 server 都要求 3.13+（spectral 3.12–3.13） | `python3 --version` |
 | [uv](https://docs.astral.sh/uv/) | 安装/管理 Python 包 | `uv --version` |
 | [mitmproxy](https://mitmproxy.org/) 12.2.3+ | 代理内核（两个 server 都依赖它） | `mitmproxy --version` |
-| git | 源码安装 u33pk | `git --version` |
+| git | 克隆本仓库 | `git --version` |
 
 ## 一条命令
 
@@ -17,17 +17,26 @@ cd mitmproxy-mcp
 ./scripts/install.sh
 ```
 
-脚本是幂等的，可重复执行。要看它会做什么而不实际执行：
+脚本是幂等的，可重复执行。
+
+| 参数 | 作用 |
+|---|---|
+| `--check` | 只报告现状，**不改动任何文件** |
+| `--force` | 从 vendored 源码重装两个后端（环境被搞坏、依赖被升级成 mcp 2.x 时用） |
+| `--uninstall` | 卸载本脚本装过的全部东西 |
+| `--no-mitmproxy` | 跳过 mitmproxy 本体的安装检查 |
 
 ```bash
-./scripts/install.sh --check
+./scripts/install.sh --check      # 只看现状
+./scripts/install.sh --force      # 重装后端
+./scripts/install.sh --uninstall  # 卸载
 ```
 
 ## 脚本具体做了什么
 
 1. **mitmproxy** — 若未安装，通过 asdf 插件装（若已装则跳过）。
-2. **spectral** — `uv tool install --with "mcp<2" mitmproxy-mcp`，装到 `~/.local/share/uv/tools/mitmproxy-mcp/`。
-3. **u33pk** — 从 GitHub 源码 clone 到 `~/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk`，`uv venv` + `uv pip install -e ".[dev]"`。
+2. **spectral** — `uv tool install --with "mcp<2" "$REPO_ROOT/spectral"`，从**本仓库 vendored 源码**安装，装到 `~/.local/share/uv/tools/mitmproxy-mcp/`。
+3. **u33pk** — 从**本仓库 vendored 源码**复制到 `~/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk`，`uv venv` + `uv pip install -e ".[dev]"` + `uv pip install "mcp<2"`。
 4. **wrapper** — 复制三个到 `~/.local/bin/`：
    `mitmproxy-mcp-spectral`、`mitmproxy-mcp-u33pk`（两个独立入口）、
    `mitmproxy-mcp-unified`（统一入口），并把两个上游可执行文件软链为
@@ -35,6 +44,9 @@ cd mitmproxy-mcp
    与 wrapper 并排——wrapper 据此自定位，安装到任何目录都能工作。
 5. **skill** — 复制到 `~/.agents/skills/mitmproxy-mcp/`。
 6. **CA 检查** — 确认 mitmproxy CA 存在且已被系统钥匙串信任。
+
+> 两个后端都从**本仓库内的 vendored 源码**安装，不从 PyPI 装、也不去 GitHub 现拉。
+> 这样装到的必然是**带本仓库补丁、且 pin 了 `mcp<2`** 的那一版，不会踩上游的坑。
 
 ## `mcp<2` 是必须的（不是可选）
 
@@ -153,6 +165,19 @@ gh auth refresh -h github.com -s workflow
 
 ## 卸载
 
+推荐用脚本——它知道所有安装路径，且跟随环境变量变化：
+
+```bash
+./scripts/install.sh --uninstall
+```
+
+会删除：三个 wrapper、两个上游软链、聚合器脚本 `mitmproxy_mcp_unified.py`、
+skill 目录、运行状态目录、u33pk 源码安装目录、spectral 的 uv tool 包。
+
+**保留不动**：mitmproxy 本体、`~/.mitmproxy/`（CA 证书）。
+
+仓库已经删掉时的手工等价命令（路径与默认安装一致时）：
+
 ```bash
 # 两个后端
 uv tool uninstall mitmproxy-mcp
@@ -165,6 +190,9 @@ rm -f ~/.local/bin/mitmproxy-mcp-spectral \
       ~/.local/bin/mitmproxy_mcp_unified.py \
       ~/.local/bin/mitmproxy-mcp-spectral-upstream \
       ~/.local/bin/mitmproxy-mcp-u33pk-upstream
+
+# 早期版本遗留的旧名文件（当前版本不再安装）
+rm -f ~/.local/bin/mitmproxy_mcp_server.py
 
 # skill 与状态
 rm -rf ~/.agents/skills/mitmproxy-mcp
