@@ -18,3 +18,6 @@ mitm_mcp_traffic.db-journal
 
 # OS
 .DS_Store
+
+# leftover from sandbox probe (cannot be unlinked outside the sandbox workspace)
+PROBE.md
