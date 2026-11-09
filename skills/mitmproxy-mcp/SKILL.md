@@ -46,12 +46,14 @@ description: 用 mitmproxy MCP server 抓取、检查、重放、修改 HTTP/HTT
 
 **用 u33pk 的场景**（`u33pk_*`）：WebSocket 注入、自定义加解密脚本（`u33pk_crypt_ctl`）、mock server 回放（`u33pk_mock_server_ctl`）、mitmweb 图形界面、或用只读 MCP resource 省 token。
 
+u33pk 的 7 个只读 resource（无需调用工具即可读，适合先看状态再决定展开）：
+`mitmproxy://proxy/status`、`mitmproxy://flows/latest`、`mitmproxy://flows/{id}`、`mitmproxy://config/rules`、`mitmproxy://events/latest`、`mitmproxy://crypto/scripts`、`mitmproxy://ca/status`。
+
 ## u33pk 的坑（实测踩过）
 
 1. **`flow_id` 必须是整数 `store_id`，不是 UUID。** `u33pk_http_ctl(cmd="list")` 返回的 `id` 字段是 UUID 字符串，但 `flow_id` 参数类型是 int —— 直接传 UUID 会报 pydantic `int_parsing` 错误，`get`/`replay` 全废。要用列表里的 `store_id`（从 1 开始）。
 
-2. **`map_local_ctl` / `map_remote_ctl` 在上游是坏的。** 根因：FastMCP 已把 JSON dict 校验成 pydantic 模型，函数体内又 `**rule` 二次解包 → `TypeError: argument after ** must be a mapping`。
-   本仓库已修复（改为 `model_validate(rule)`），**在统一入口下同样生效**。若用的是未经修复的上游版本，这两个工具 100% 崩溃，不要在它们身上浪费时间。
+2. **`map_local_ctl` / `map_remote_ctl` 的上游 bug 已修复，可正常使用。** 上游根因：FastMCP 已把 JSON dict 校验成 pydantic 模型，函数体内又 `**rule` 二次解包 → `TypeError: argument after ** must be a mapping`。本仓库 vendored 版已改为 `model_validate(rule)`，**统一入口下实测 add/list/clear 全部通过**。只有直接用未经修复的上游版本时这两个工具才会 100% 崩溃。
 
 3. **规则类工具参数要靠 `tool_info` 查。** `u33pk_tool_info(tool_name, cmd)` 返回该命令的必填参数和示例，比猜快得多。规则对象必须含 `id` 和 `filter`；`u33pk_capture_rule_ctl` 用 `action`（`include`/`exclude`）而不是 `include` 布尔；`set_header` action 还需要 `target` 字段；`jsonpath` 必须是**数组**，如 `["$.data[0].id"]`。
 
@@ -64,6 +66,18 @@ description: 用 mitmproxy MCP server 抓取、检查、重放、修改 HTTP/HTT
 ## 流量存储副作用
 
 spectral 会在**当前工作目录**写 `mitm_mcp_traffic.db`（SQLite）。wrapper 已把工作目录固定到 `~/.local/state/mitmproxy-mcp/<flavor>/`，不会乱落到项目目录。
+
+## 环境坏了怎么自救
+
+两个后端都从仓库内 vendored 源码安装（自带全部修复与 `mcp<2` pin）。server 起不来、工具崩溃、或依赖被升级成 mcp 2.x 时，到仓库目录重装即可：
+
+```bash
+./scripts/install.sh --force      # 重装两个后端，wrapper 与 skill 一并刷新
+./scripts/install.sh --check      # 只报告现状，不改动
+./scripts/install.sh --uninstall  # 彻底卸载本脚本装过的一切
+```
+
+重装不会动 mitmproxy 本体与 `~/.mitmproxy/`（CA）。
 
 ## CA 证书
 
@@ -81,8 +95,9 @@ spectral 会在**当前工作目录**写 `mitm_mcp_traffic.db`（SQLite）。wra
 spectral_start_proxy(port=8081)                   # spectral 后端
 u33pk_proxy_ctl(cmd="start", port=8082)           # u33pk 后端
 
-# 2. 让客户端走代理（浏览器/curl/App 都行）
+# 2. 让客户端走代理（浏览器/curl/App 都行），首次建议只起一个后端验证链路
 #    代理地址 127.0.0.1:8081 或 127.0.0.1:8082
+curl --cacert ~/.mitmproxy/mitmproxy-ca-cert.pem -x http://127.0.0.1:8081 https://example.com
 
 # 3. 看流量
 spectral_get_traffic_summary(limit=20)            # spectral
