@@ -41,21 +41,49 @@
 ## 快速开始
 
 ```bash
+# 1. 克隆并安装（幂等，可重复执行）
 git clone https://github.com/dehengxu/mitmproxy-mcp.git
 cd mitmproxy-mcp
-./scripts/install.sh          # 安装两个 server + skill + wrapper
+./scripts/install.sh
+
+# 2. 自检：确认两个后端、统一入口、端口、CA 全部就绪
+./scripts/verify.sh
 ```
 
-脚本会打印一段 MCP 客户端配置，粘进你的客户端即可。详细步骤见 [docs/install.md](docs/install.md)。
+脚本结束时会打印可直接粘贴的 MCP 客户端配置：
+
+```json
+{
+  "mcpServers": {
+    "mitmproxy-mcp": {
+      "command": "~/.local/bin/mitmproxy-mcp-unified",
+      "args": []
+    }
+  }
+}
+```
+
+> `~` 不会被客户端展开，请改成绝对路径。
+
+### 前置依赖
+
+| 依赖 | 说明 |
+|---|---|
+| Python 3.13+ | 两个后端都要求 |
+| [uv](https://docs.astral.sh/uv/) | 安装 Python 包 |
+| [mitmproxy](https://mitmproxy.org/) 12.2.3+ | 代理内核（`install.sh` 会尝试用 asdf 装） |
+| git | 源码安装 u33pk |
+
+详细步骤、CA 证书安装、自定义路径见 [docs/install.md](docs/install.md)。
 
 ## 端口分配（固定约定）
 
 两个 server 默认都监听 **8080**，直接用默认值会撞车。本仓库通过 wrapper 固定隔离：
 
-| Server | 代理端口 | mitmweb | 启动命令 |
+| Server | 代理端口 | mitmweb | 启动命令（统一入口，前缀必带） |
 |---|---|---|---|
-| Spectral | **8081** | — | `start_proxy(port=8081)` |
-| u33pk | **8082** | 8083 | `proxy_ctl(cmd="start", port=8082)` |
+| Spectral | **8081** | — | `spectral_start_proxy(port=8081)` |
+| u33pk | **8082** | 8083 | `u33pk_proxy_ctl(cmd="start", port=8082)` |
 
 启动代理时**必须显式传端口**，不要用默认 8080。
 

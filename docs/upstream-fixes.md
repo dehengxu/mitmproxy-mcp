@@ -2,6 +2,9 @@
 
 本仓库 vendoring 两份上游源码。以下改动只影响 `u33pk/`，`spectral/` 未做任何修改。
 
+> 本文件中的工具名是**上游源码里的原始名称**（如 `map_remote_ctl`）。
+> 通过统一入口调用时需加前缀，即 `u33pk_map_remote_ctl`。
+
 ## 1. `map_local_ctl` / `map_remote_ctl` 100% 崩溃
 
 ### 现象

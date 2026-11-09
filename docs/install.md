@@ -28,7 +28,11 @@ cd mitmproxy-mcp
 1. **mitmproxy** — 若未安装，通过 asdf 插件装（若已装则跳过）。
 2. **spectral** — `uv tool install --with "mcp<2" mitmproxy-mcp`，装到 `~/.local/share/uv/tools/mitmproxy-mcp/`。
 3. **u33pk** — 从 GitHub 源码 clone 到 `~/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk`，`uv venv` + `uv pip install -e ".[dev]"`。
-4. **wrapper** — 复制到 `~/.local/bin/mitmproxy-mcp-spectral` 和 `~/.local/bin/mitmproxy-mcp-u33pk`。
+4. **wrapper** — 复制三个到 `~/.local/bin/`：
+   `mitmproxy-mcp-spectral`、`mitmproxy-mcp-u33pk`（两个独立入口）、
+   `mitmproxy-mcp-unified`（统一入口），并把两个上游可执行文件软链为
+   `mitmproxy-mcp-spectral-upstream` / `mitmproxy-mcp-u33pk-upstream`
+   与 wrapper 并排——wrapper 据此自定位，安装到任何目录都能工作。
 5. **skill** — 复制到 `~/.agents/skills/mitmproxy-mcp/`。
 6. **CA 检查** — 确认 mitmproxy CA 存在且已被系统钥匙串信任。
 
@@ -119,16 +123,23 @@ security dump-trust-settings -d | grep -A2 mitmproxy
 
 所有路径都可用环境变量覆盖：
 
-| 变量 | 默认值 |
-|---|---|
-| `BIN_DIR` | `~/.local/bin` |
-| `SKILLS_DIR` | `~/.agents/skills` |
-| `STATE_DIR` | `~/.local/state/mitmproxy-mcp` |
-| `U33PK_HOME` | `~/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk` |
-| `SPECTRAL_BIN` | `~/.local/share/uv/tools/mitmproxy-mcp/bin/mitmproxy-mcp` |
-| `U33PK_BIN` | `$U33PK_HOME/.venv/bin/mitmproxy-mcp` |
+| 变量 | 默认值 | 作用 |
+|---|---|---|
+| `BIN_DIR` | `~/.local/bin` | wrapper 与软链的安装目录 |
+| `SKILLS_DIR` | `~/.agents/skills` | skill 安装目录 |
+| `STATE_DIR` | `~/.local/state/mitmproxy-mcp` | 运行状态目录（各后端子目录） |
+| `U33PK_HOME` | `~/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk` | u33pk 源码安装位置 |
+| `SPECTRAL_BIN` | wrapper 同目录的 `mitmproxy-mcp-spectral-upstream`，回退 `~/.local/share/uv/tools/mitmproxy-mcp/bin/mitmproxy-mcp` | spectral 上游可执行文件 |
+| `U33PK_BIN` | wrapper 同目录的 `mitmproxy-mcp-u33pk-upstream`，回退 `$U33PK_HOME/.venv/bin/mitmproxy-mcp` | u33pk 上游可执行文件 |
+| `MITMPROXY_MCP_PYTHON` | 自动探测带 `mcp` SDK 的 python | 统一入口使用的解释器 |
+| `MITMPROXY_MCP_SERVER_SCRIPT` | wrapper 同目录的 `mitmproxy_mcp_unified.py` | 聚合器脚本位置 |
+| `MITMPROXY_MCP_STATE_DIR` | `~/.local/state/mitmproxy-mcp/<flavor>` | 单个后端的状态目录 |
 
-wrapper 也支持用 `SPECTRAL_BIN` / `U33PK_BIN` 指向别处的可执行文件。
+> 上表是**运行时**环境变量（在调用 wrapper 时生效）。
+> `BIN_DIR` / `SKILLS_DIR` / `STATE_DIR` / `U33PK_HOME` 同时也是 `install.sh` 的安装参数。
+
+wrapper 的查找顺序是：显式环境变量 → 自身目录旁的软链 → 默认安装位置。
+因此**把 wrapper 复制到别处也能正常工作**，无需额外配置。
 
 ## 启用 CI（可选）
 
@@ -143,9 +154,19 @@ gh auth refresh -h github.com -s workflow
 ## 卸载
 
 ```bash
+# 两个后端
 uv tool uninstall mitmproxy-mcp
 rm -rf ~/Projects/personal/mcp-servers/mitmproxy-mcp-u33pk
-rm -f ~/.local/bin/mitmproxy-mcp-spectral ~/.local/bin/mitmproxy-mcp-u33pk
+
+# wrapper、统一入口与软链
+rm -f ~/.local/bin/mitmproxy-mcp-spectral \
+      ~/.local/bin/mitmproxy-mcp-u33pk \
+      ~/.local/bin/mitmproxy-mcp-unified \
+      ~/.local/bin/mitmproxy_mcp_unified.py \
+      ~/.local/bin/mitmproxy-mcp-spectral-upstream \
+      ~/.local/bin/mitmproxy-mcp-u33pk-upstream
+
+# skill 与状态
 rm -rf ~/.agents/skills/mitmproxy-mcp
 rm -rf ~/.local/state/mitmproxy-mcp
 ```

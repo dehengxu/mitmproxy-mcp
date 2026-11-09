@@ -21,6 +21,16 @@ for w in spectral u33pk unified; do
     bad "$BIN_DIR/mitmproxy-mcp-$w missing"
   fi
 done
+
+# The wrappers locate their upstream through these links.
+for u in spectral u33pk; do
+  link="$BIN_DIR/mitmproxy-mcp-$u-upstream"
+  if [ -x "$link" ]; then
+    ok "$link -> $(readlink "$link" 2>/dev/null || echo present)"
+  else
+    warn "$link missing - re-run scripts/install.sh"
+  fi
+done
 echo
 
 say "tools/list"
@@ -61,6 +71,18 @@ if [ -f "$HOME/.mitmproxy/mitmproxy-ca-cert.pem" ]; then
   fi
 else
   warn "no CA yet"
+fi
+echo
+
+say "unified entry (functional)"
+if [ -x "$BIN_DIR/mitmproxy-mcp-unified" ] && [ -f "$SCRIPT_DIR/test_unified_entry.py" ]; then
+  if python3 "$SCRIPT_DIR/test_unified_entry.py" "$BIN_DIR/mitmproxy-mcp-unified" >/dev/null 2>&1; then
+    ok "merged tools, schemas and routing all work"
+  else
+    bad "unified entry regression test failed (run scripts/test_unified_entry.py for details)"
+  fi
+else
+  warn "skipped (unified entry or test script missing)"
 fi
 echo
 

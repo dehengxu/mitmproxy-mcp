@@ -23,7 +23,7 @@ uv pip install "mcp<2"
 
 ## `int_parsing` / `flow_id` 报错
 
-**原因**：u33pk 的 `flow_id` 是整数，但 `http_ctl(cmd="list")` 返回的 `id` 字段是 UUID 字符串。
+**原因**：u33pk 的 `flow_id` 是整数，但 `u33pk_http_ctl(cmd="list")` 返回的 `id` 字段是 UUID 字符串。
 
 **修复**：用列表里的 `store_id` 字段（从 1 开始），不是 `id`。
 
@@ -55,7 +55,7 @@ sudo security add-trusted-cert -d -r trustRoot -p ssl \
 
 **原因**：两个 server 默认都监听 8080。
 
-**修复**：始终显式传端口。spectral 用 `start_proxy(port=8081)`，u33pk 用 `proxy_ctl(cmd="start", port=8082)`；u33pk 开图形界面再加 `web_port=8083`。
+**修复**：始终显式传端口。统一入口下 spectral 用 `spectral_start_proxy(port=8081)`，u33pk 用 `u33pk_proxy_ctl(cmd="start", port=8082)`；u33pk 开图形界面再加 `web_port=8083`。
 
 ## SQLite 建表失败（`CREATE TABLE IF NOT EXISTS flows`）
 
