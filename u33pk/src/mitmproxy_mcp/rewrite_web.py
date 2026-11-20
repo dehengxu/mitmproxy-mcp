@@ -45,7 +45,12 @@ from urllib.parse import urlparse
 from mitmproxy.tools.web.app import RequestHandler as WebRequestHandler
 from tornado import web
 
-from mitmproxy_mcp.rules import Rule
+from mitmproxy_mcp.rules import (
+    Rule,
+    RuleSet,
+    action_claims,
+    claims_conflict,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from mitmproxy.tools.web.master import WebMaster
@@ -274,6 +279,261 @@ class RuleSetEnableHandler(RewriteRequestHandler):
         )
 
 
+class RuleSetHandler(RewriteRequestHandler):
+    """``POST /rewrite/rulesets`` -- create or update a rule set."""
+
+    def post(self) -> None:
+        body = self.json_body()
+        ruleset_id = body.get("id")
+        if not ruleset_id:
+            return self.fail("id is required", 400)
+        name = body.get("name", "")
+        enabled = body.get("enabled", True)
+        if not isinstance(enabled, bool):
+            return self.fail("enabled must be true or false", 400)
+        try:
+            if any(rs.id == ruleset_id for rs in self.manager.list_rulesets()):
+                # Editing a set must not drop the rules inside it: the set
+                # update path keeps them and only touches name / enabled.
+                updated = self.manager.update_ruleset(
+                    ruleset_id, {"name": name, "enabled": enabled}
+                )
+                if updated is None:
+                    return self.fail(f"Rule set with id {ruleset_id} not found", 404)
+                return self.write(
+                    {"success": True, "ruleset": updated.model_dump(exclude_none=True)}
+                )
+            ruleset = RuleSet(id=ruleset_id, name=name, enabled=enabled)
+        except ValueError as e:
+            return self.fail(str(e), 400)
+        created = self.manager.add_ruleset(ruleset)
+        self.write({"success": True, "ruleset": created.model_dump(exclude_none=True)})
+
+
+class RuleSetDeleteHandler(RewriteRequestHandler):
+    """``POST /rewrite/rulesets/delete`` -- delete a rule set."""
+
+    def post(self) -> None:
+        body = self.json_body()
+        ruleset_id = body.get("id")
+        if not ruleset_id:
+            return self.fail("id is required", 400)
+        if not self.manager.delete_ruleset(ruleset_id):
+            return self.fail(f"Rule set with id {ruleset_id} not found", 404)
+        self.write({"success": True})
+
+
+class RuleSetAddRuleHandler(RewriteRequestHandler):
+    """``POST /rewrite/rulesets/rules`` -- move a rule into a rule set."""
+
+    def post(self) -> None:
+        body = self.json_body()
+        ruleset_id = body.get("ruleset_id")
+        rule_id = body.get("rule_id")
+        if not ruleset_id:
+            return self.fail("ruleset_id is required", 400)
+        if not rule_id:
+            return self.fail("rule_id is required", 400)
+        index = body.get("index")
+        if index is not None and not isinstance(index, int):
+            return self.fail("index must be an integer", 400)
+
+        # The rule has to be fetched first: moving it means taking the very
+        # same rule object out of wherever it is now.
+        rule = next((r for r in self.manager.list_rules() if r.id == rule_id), None)
+        if rule is None:
+            return self.fail(f"Rule with id {rule_id} not found", 404)
+        try:
+            updated = self.manager.add_rule_to_ruleset(ruleset_id, rule, index)
+        except ValueError as e:
+            return self.fail(str(e), 400)
+        if updated is None:
+            return self.fail(f"Rule set with id {ruleset_id} not found", 404)
+        self.write({"success": True, "ruleset": updated.model_dump(exclude_none=True)})
+
+
+class RuleSetRemoveRuleHandler(RewriteRequestHandler):
+    """``POST /rewrite/rulesets/rules/remove`` -- move a rule out of a set.
+
+    The rule is not deleted: it becomes a standalone rule again, which keeps
+    it in the evaluation order instead of dropping it silently.
+    """
+
+    def post(self) -> None:
+        body = self.json_body()
+        ruleset_id = body.get("ruleset_id")
+        rule_id = body.get("rule_id")
+        if not ruleset_id:
+            return self.fail("ruleset_id is required", 400)
+        if not rule_id:
+            return self.fail("rule_id is required", 400)
+        rule = next(
+            (
+                r
+                for rs in self.manager.list_rulesets()
+                if rs.id == ruleset_id
+                for r in rs.rules
+                if r.id == rule_id
+            ),
+            None,
+        )
+        if rule is None:
+            return self.fail(
+                f"Rule {rule_id} not found in rule set {ruleset_id}", 404
+            )
+        if not self.manager.remove_rule_from_ruleset(ruleset_id, rule_id):
+            return self.fail(
+                f"Rule {rule_id} not found in rule set {ruleset_id}", 404
+            )
+        # Back to the standalone list, where it keeps its place in the order.
+        rule.ruleset_id = None
+        self.manager.add_rule(rule)
+        self.write({"success": True})
+
+
+class RuleSetReorderHandler(RewriteRequestHandler):
+    """``POST /rewrite/rulesets/reorder`` -- set the order inside a set."""
+
+    def post(self) -> None:
+        body = self.json_body()
+        ruleset_id = body.get("id")
+        rule_ids = body.get("rule_ids")
+        if not ruleset_id:
+            return self.fail("id is required", 400)
+        if not isinstance(rule_ids, list) or not all(
+            isinstance(r, str) for r in rule_ids
+        ):
+            return self.fail("rule_ids must be a list of rule ids", 400)
+        try:
+            updated = self.manager.reorder_ruleset_rules(ruleset_id, rule_ids)
+        except ValueError as e:
+            return self.fail(str(e), 400)
+        self.write({"success": True, "ruleset": updated.model_dump(exclude_none=True)})
+
+
+class RuleSetMoveHandler(RewriteRequestHandler):
+    """``POST /rewrite/rulesets/move`` -- move a set in the evaluation order."""
+
+    def post(self) -> None:
+        body = self.json_body()
+        ruleset_id = body.get("id")
+        index = body.get("index")
+        if not ruleset_id:
+            return self.fail("id is required", 400)
+        if not isinstance(index, int):
+            return self.fail("index must be an integer", 400)
+        try:
+            moved = self.manager.move_ruleset(ruleset_id, index)
+        except ValueError as e:
+            return self.fail(str(e), 400)
+        self.write({"success": True, "ruleset": moved.model_dump(exclude_none=True)})
+
+
+class RulePreviewHandler(RewriteRequestHandler):
+    """``GET /rewrite/rules/preview`` -- who would win for one target field.
+
+    The WebUI shows this in the rule editor: the rules that write the field
+    the user picked, in evaluation order, the first one effective and the
+    rest marked as skipped. The judgement is the engine's own: the same
+    ``action_claims`` and ``claims_conflict`` the request path uses, so the
+    preview cannot disagree with what actually happens on a flow.
+    """
+
+    def get(self) -> None:
+        self.issue_xsrf_cookie()
+        target = self.get_query_argument("target", None)
+        field = self.get_query_argument("field", None)
+        name = self.get_query_argument("name", None)
+        if not target:
+            return self.fail("target is required", 400)
+        if not field:
+            return self.fail("field is required", 400)
+
+        try:
+            probe = _preview_claim(target, field, name)
+        except ValueError as e:
+            return self.fail(str(e), 400)
+        if probe is None:
+            return self.fail(
+                f"No such target field: {target} {field}"
+                + (f" {name}" if name else ""),
+                400,
+            )
+
+        # The same order the engine evaluates in: standalone rules first, then
+        # each enabled set in order, rules inside a set in list order.
+        rules = self.manager.list_rules()
+        enabled_sets = {rs.id for rs in self.manager.list_rulesets() if rs.enabled}
+
+        rows: list[dict[str, Any]] = []
+        owner: str | None = None
+        for rule in rules:
+            if not rule.enabled:
+                continue
+            if rule.ruleset_id is not None and rule.ruleset_id not in enabled_sets:
+                continue
+            claims: list[tuple[str, str]] = []
+            for action in rule.actions:
+                claims.extend(action_claims(action))
+            if not any(claims_conflict(claim, probe) for claim in claims):
+                continue
+            if owner is None:
+                owner = rule.id
+                rows.append(
+                    {
+                        "rule_id": rule.id,
+                        "rule_name": rule.name,
+                        "ruleset_id": rule.ruleset_id,
+                        "effective": True,
+                        "skipped_by": None,
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "rule_id": rule.id,
+                        "rule_name": rule.name,
+                        "ruleset_id": rule.ruleset_id,
+                        "effective": False,
+                        "skipped_by": owner,
+                    }
+                )
+        self.write({"success": True, "rules": rows})
+
+
+def _preview_claim(
+    target: str, field: str, name: str | None
+) -> tuple[str, str] | None:
+    """Turn a UI target field into the engine's own claim tuple.
+
+    The result is comparable with ``claims_conflict``: a claim for
+    ``request header x-foo`` is ``("request", "header:x-foo")``, matching what
+    ``action_claims`` produces for a ``set_header`` action.
+    """
+    if target not in ("request", "response"):
+        raise ValueError("target must be request or response")
+    if field == "header":
+        if not name:
+            raise ValueError("name is required for a header field")
+        return (target, f"header:{name.lower()}")
+    if field == "query":
+        if not name:
+            raise ValueError("name is required for a query field")
+        # Query names are case sensitive, so they are not lowercased.
+        return (target, f"query:{name}")
+    if field == "body":
+        return (target, "body")
+    if field in ("status_code", "method", "path", "url"):
+        if field == "status_code":
+            return ("response", "status_code")
+        if field == "method":
+            return ("request", "method")
+        if field == "path":
+            return ("request", "path")
+        return ("request", "url")
+    return None
+
+
 def handlers(manager: ProxyManager) -> list[tuple[str, type[RewriteRequestHandler], dict[str, Any]]]:
     """The route table, bound to ``manager``.
 
@@ -288,6 +548,13 @@ def handlers(manager: ProxyManager) -> list[tuple[str, type[RewriteRequestHandle
         (rf"{PREFIX}/rules/enable", RuleEnableHandler, kwargs),
         (rf"{PREFIX}/rules/delete", RuleDeleteHandler, kwargs),
         (rf"{PREFIX}/rulesets/enable", RuleSetEnableHandler, kwargs),
+        (rf"{PREFIX}/rulesets$", RuleSetHandler, kwargs),
+        (rf"{PREFIX}/rulesets/delete", RuleSetDeleteHandler, kwargs),
+        (rf"{PREFIX}/rulesets/rules", RuleSetAddRuleHandler, kwargs),
+        (rf"{PREFIX}/rulesets/rules/remove", RuleSetRemoveRuleHandler, kwargs),
+        (rf"{PREFIX}/rulesets/reorder", RuleSetReorderHandler, kwargs),
+        (rf"{PREFIX}/rulesets/move", RuleSetMoveHandler, kwargs),
+        (rf"{PREFIX}/rules/preview", RulePreviewHandler, kwargs),
     ]
 
 
