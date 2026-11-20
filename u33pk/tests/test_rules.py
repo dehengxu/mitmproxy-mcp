@@ -278,19 +278,19 @@ def test_kill_action() -> None:
     assert not flow.live
 
 
-def test_intercept_and_resume_actions() -> None:
-    addon = RulesAddon()
-    addon.add_rule(
+def test_intercept_and_resume_actions_are_mutually_exclusive() -> None:
+    """resume releases the flow immediately, intercept holds it for a decision.
+
+    Combining them in one rule is a configuration error: the runtime order
+    would otherwise depend on which action ran last.
+    """
+    with pytest.raises(ValueError):
         Rule(
             id="r1",
             filter="~u example.com",
             phase="request",
             actions=[Action(type="intercept"), Action(type="resume")],
         )
-    )
-    flow = _make_flow("http://example.com/")
-    _run(addon.request(flow))
-    assert not flow.intercepted
 
 
 def test_delay_action() -> None:

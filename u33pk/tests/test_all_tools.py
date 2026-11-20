@@ -10,6 +10,7 @@ Or directly:
 """
 
 from __future__ import annotations
+import sys
 
 import os
 import subprocess
@@ -39,7 +40,7 @@ def test_all_tools() -> None:
     assert "mode" in r["options"]
 
     # 3. proxy_start
-    r = proxy_ctl(cmd="start", port=18082)
+    r = proxy_ctl(cmd="start", port=18182)
     assert r["success"] is True
 
     # 3b. wireguard_config should fail in regular mode
@@ -127,7 +128,7 @@ def test_all_tools() -> None:
 
     # 13. flow_action send
     server = subprocess.Popen(
-        ["python", "-m", "http.server", "19001", "--bind", "127.0.0.1"],
+        [sys.executable, "-m", "http.server", "19001", "--bind", "127.0.0.1"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

@@ -19,7 +19,7 @@ async def test_sse_server_lists_tools() -> None:
     from mitmproxy_mcp.server import mcp
 
     host = "127.0.0.1"
-    port = 18082
+    port = 18183
     mcp.settings.host = host
     mcp.settings.port = port
 

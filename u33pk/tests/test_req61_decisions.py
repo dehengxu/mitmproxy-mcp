@@ -15,7 +15,9 @@ def _make_flow(url: str = "http://example.com/", method: str = "GET") -> http.HT
     server = Server(address=(req.host, req.port))
     flow = http.HTTPFlow(client, server)
     flow.request = req
-    flow.id = 7
+    # NOTE: do not overwrite flow.id -- mitmproxy assigns a UUID string, and
+    # PendingDecision.flow_id must accept it. Overriding it with an int used
+    # to hide a real type bug (int vs str) in the pending queue.
     return flow
 
 
@@ -43,7 +45,8 @@ def test_intercept_holds_flow_and_issues_pending_token() -> None:
     assert flow.intercepted is True
     pending = addon.list_pending()
     assert len(pending) == 1
-    assert pending[0].flow_id == 7
+    assert pending[0].flow_id == flow.id
+    assert isinstance(pending[0].flow_id, str)
     assert pending[0].rule_id == "bp"
     assert pending[0].phase == "request"
     assert pending[0].token
@@ -183,3 +186,106 @@ def test_update_rule_validates_filter() -> None:
 def test_cancel_action_is_accepted() -> None:
     action = Action(type="cancel")
     assert action.type == "cancel"
+
+
+# ---------------------------------------------------------------------------
+# Regression: real mitmproxy flow ids are UUID strings
+# ---------------------------------------------------------------------------
+
+
+def test_pending_accepts_real_uuid_flow_id() -> None:
+    """mitmproxy assigns flow.id as a UUID string; the pending queue must accept it.
+
+    Regression for a bug where PendingDecision.flow_id was typed as int: the
+    pydantic validation error was swallowed, so the flow was never held and the
+    request was released without a decision.
+    """
+    addon = RulesAddon()
+    addon.add_rule(
+        Rule(id="bp", filter="~u example.com", actions=[Action(type="intercept")])
+    )
+    flow = _make_flow()
+
+    _run(addon.request(flow))
+
+    assert flow.id != 7
+    assert isinstance(flow.id, str)
+    pending = addon.list_pending()
+    assert len(pending) == 1
+    assert pending[0].flow_id == flow.id
+    assert flow.intercepted is True
+
+
+def test_pending_flow_id_is_not_coerced_to_int() -> None:
+    addon = RulesAddon()
+    addon.add_rule(
+        Rule(id="bp", filter="~u example.com", actions=[Action(type="intercept")])
+    )
+    flow = _make_flow()
+
+    _run(addon.request(flow))
+
+    pending = addon.list_pending()[0]
+    assert not pending.flow_id.isdigit()
+
+
+# ---------------------------------------------------------------------------
+# Cancel discards the edits the rule applied
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_discards_rule_rewrites() -> None:
+    """Cancel must restore the pre-rule snapshot, not the rewritten message."""
+    addon = RulesAddon()
+    addon.add_rule(
+        Rule(
+            id="bp",
+            filter="~u example.com",
+            actions=[
+                Action(type="set_body", target="request", content="EDITED"),
+                Action(type="intercept"),
+            ],
+        )
+    )
+    flow = _make_flow()
+    original = flow.request.content
+
+    _run(addon.request(flow))
+
+    assert flow.request.content == b"EDITED"
+    token = addon.list_pending()[0].token
+    addon.decide(token, "cancel")
+    assert flow.request.content == original
+
+
+def test_cancel_action_releases_flow_unchanged() -> None:
+    """Action 'cancel' discards the rewrite and lets the flow through."""
+    addon = RulesAddon()
+    addon.add_rule(
+        Rule(
+            id="bp",
+            filter="~u example.com",
+            actions=[
+                Action(type="set_body", target="request", content="EDITED"),
+                Action(type="cancel"),
+            ],
+        )
+    )
+    flow = _make_flow()
+    original = flow.request.content
+
+    _run(addon.request(flow))
+
+    assert flow.request.content == original
+    assert flow.intercepted is False
+    assert addon.list_pending() == []
+    assert flow.metadata["mitmproxy_mcp_decision"] == "cancel"
+
+
+def test_cancel_and_intercept_cannot_be_combined() -> None:
+    with pytest.raises(ValueError):
+        Rule(
+            id="bp",
+            filter="~u example.com",
+            actions=[Action(type="intercept"), Action(type="cancel")],
+        )

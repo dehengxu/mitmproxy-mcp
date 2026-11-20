@@ -11,6 +11,7 @@ Or run the script directly:
 """
 
 from __future__ import annotations
+import sys
 
 import socket
 import subprocess
@@ -36,7 +37,7 @@ def test_capture_http_local_server() -> None:
         _wait_for_port("127.0.0.1", port, timeout=10)
 
         server = subprocess.Popen(
-            ["python", "-m", "http.server", "19000", "--bind", "127.0.0.1"],
+            [sys.executable, "-m", "http.server", "19000", "--bind", "127.0.0.1"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

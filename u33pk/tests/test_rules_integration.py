@@ -10,6 +10,7 @@ Or directly:
 """
 
 from __future__ import annotations
+import sys
 
 import http.client
 import subprocess
@@ -49,7 +50,7 @@ def _cleanup():
 
 def _start_http_server(port: int) -> subprocess.Popen:
     server = subprocess.Popen(
-        ["python", "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -87,7 +88,7 @@ def _http_get_via_proxy(url: str, proxy_port: int, timeout: float = 10) -> tuple
 def test_automatic_rule_modifies_response() -> None:
     """An automatic rule modifies response headers for matching flows."""
     server_port = 19011
-    proxy_port = 18091
+    proxy_port = 18161
 
     server = _start_http_server(server_port)
     try:
@@ -141,7 +142,7 @@ def test_automatic_rule_modifies_response() -> None:
 def test_automatic_rule_blocks_request() -> None:
     """An automatic rule kills matching requests before they reach the server."""
     server_port = 19012
-    proxy_port = 18092
+    proxy_port = 18162
 
     server = _start_http_server(server_port)
     try:
@@ -182,7 +183,7 @@ def test_automatic_rule_blocks_request() -> None:
 def test_capture_rules_include_exclude() -> None:
     """Capture rules decide which flows are stored."""
     server_port = 19013
-    proxy_port = 18093
+    proxy_port = 18163
 
     server = _start_http_server(server_port)
     try:
@@ -231,7 +232,7 @@ def test_capture_rules_include_exclude() -> None:
 def test_capture_rules_runtime_update() -> None:
     """Capture rules can be changed at runtime without restarting proxy."""
     server_port = 19014
-    proxy_port = 18094
+    proxy_port = 18164
 
     server = _start_http_server(server_port)
     try:

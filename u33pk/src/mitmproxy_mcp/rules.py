@@ -9,7 +9,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from mitmproxy import flowfilter
 from mitmproxy import http
@@ -137,7 +137,12 @@ class PendingDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     token: str
-    flow_id: int
+    flow_id: str
+    """mitmproxy's native flow id (a UUID string), e.g. '07e1f32d-977a-...'."""
+
+    store_id: int | None = None
+    """u33pk FlowStore id when the flow has already been captured, else None."""
+
     rule_id: str
     phase: Literal["request", "response"]
     created_at: float
@@ -163,6 +168,19 @@ class Rule(BaseModel):
     _compiled_filter: flowfilter.TFilter | None = PrivateAttr(default=None)
 
     def model_post_init(self, __context: Any) -> None:
+        action_types = {a.type for a in self.actions}
+        if "cancel" in action_types and "intercept" in action_types:
+            raise ValueError(
+                "Action 'cancel' cannot be combined with 'intercept': cancel "
+                "discards the rewrite and releases the flow, while intercept "
+                "holds it for a manual decision."
+            )
+        if "resume" in action_types and "intercept" in action_types:
+            raise ValueError(
+                "Action 'resume' cannot be combined with 'intercept': resume "
+                "releases the flow immediately, while intercept holds it for a "
+                "manual decision."
+            )
         try:
             self._compiled_filter = flowfilter.parse(self.filter)
         except ValueError as e:
@@ -188,13 +206,29 @@ def _decode_content(content: str, encoding: Literal["text", "base64"]) -> bytes:
     return content.encode("utf-8")
 
 
+class FlowController(Protocol):
+    """Releases or kills a held flow inside mitmproxy's own event loop."""
+
+    def resume(self, flow: http.HTTPFlow) -> None: ...
+
+    def kill(self, flow: http.HTTPFlow) -> None: ...
+
+
 class RulesAddon:
     """mitmproxy addon that applies user-defined rules to live flows."""
 
-    def __init__(self, event_buffer: EventBuffer | None = None) -> None:
+    def __init__(
+        self,
+        event_buffer: EventBuffer | None = None,
+        flow_controller: FlowController | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._rules: list[Rule] = []
         self._event_buffer = event_buffer
+        # Releases a held flow. mitmproxy runs in its own event loop thread, so
+        # flow.resume() must be dispatched there: asyncio.Event.set() from a
+        # foreign thread does not wake the waiter.
+        self._flow_controller = flow_controller
         # token -> (PendingDecision, flow, original_request, original_response)
         self._pending: dict[
             str,
@@ -254,21 +288,31 @@ class RulesAddon:
             return [entry[0] for entry in self._pending.values()]
 
     def _hold(
-        self, flow: http.HTTPFlow, rule_id: str, phase: str
+        self,
+        flow: http.HTTPFlow,
+        rule_id: str,
+        phase: str,
+        original_request: http.Request | None = None,
+        original_response: http.Response | None = None,
     ) -> PendingDecision:
-        """Hold a flow for a manual decision and return its pending token."""
+        """Hold a flow for a manual decision and return its pending token.
+
+        The caller passes the snapshot taken *before* any rewrite action ran,
+        so that a later "cancel" discards the edits and restores the original.
+        """
         token = uuid.uuid4().hex
+        store_id = None
+        if flow.metadata:
+            raw_store_id = flow.metadata.get("mitmproxy_mcp_id")
+            if isinstance(raw_store_id, int):
+                store_id = raw_store_id
         decision = PendingDecision(
             token=token,
             flow_id=flow.id,
+            store_id=store_id,
             rule_id=rule_id,
             phase=phase,  # type: ignore[arg-type]
             created_at=time.time(),
-        )
-        # Snapshot the untouched messages so a later "cancel" can discard edits.
-        original_request = flow.request.copy() if flow.request is not None else None
-        original_response = (
-            flow.response.copy() if flow.response is not None else None
         )
         with self._lock:
             self._pending[token] = (
@@ -293,6 +337,23 @@ class RulesAddon:
             )
         return decision
 
+    def _resume_flow(self, flow: http.HTTPFlow) -> None:
+        """Release a held flow.
+
+        mitmproxy runs in its own event loop thread; asyncio.Event.set() from
+        the MCP thread does not wake the waiter, so dispatch into that loop.
+        """
+        if self._flow_controller is not None:
+            self._flow_controller.resume(flow)
+        else:
+            flow.resume()
+
+    def _kill_flow(self, flow: http.HTTPFlow) -> None:
+        if self._flow_controller is not None:
+            self._flow_controller.kill(flow)
+        else:
+            flow.kill()
+
     def decide(
         self, token: str, decision: Decision
     ) -> tuple[PendingDecision, http.HTTPFlow]:
@@ -310,7 +371,7 @@ class RulesAddon:
 
         if decision == "abort":
             if flow.killable:
-                flow.kill()
+                self._kill_flow(flow)
             flow.metadata = flow.metadata or {}
             flow.metadata["mitmproxy_mcp_decision"] = "abort"
         elif decision == "cancel":
@@ -325,7 +386,7 @@ class RulesAddon:
             flow.metadata = flow.metadata or {}
             flow.metadata["mitmproxy_mcp_decision"] = "execute"
 
-        flow.resume()
+        self._resume_flow(flow)
         if self._event_buffer is not None:
             self._event_buffer.emit(
                 "flow:decided",
@@ -353,20 +414,68 @@ class RulesAddon:
             rules = list(self._rules)
 
         applied_rule_ids: list[str] = []
-        held = False
         for rule in rules:
             if not rule.matches(flow, phase):
                 continue
+            action_types = {a.type for a in rule.actions}
+            wants_intercept = "intercept" in action_types
+            wants_cancel = "cancel" in action_types
+            # Snapshot before any rewrite so "cancel" can discard the edits.
+            original_request = (
+                flow.request.copy() if flow.request is not None else None
+            )
+            original_response = (
+                flow.response.copy() if flow.response is not None else None
+            )
             try:
                 await self._apply_actions(flow, rule.actions)
-                applied_rule_ids.append(rule.id)
-                if any(a.type == "intercept" for a in rule.actions):
-                    # Hold the flow for a manual decision.
-                    self._hold(flow, rule.id, phase)
-                    held = True
-                    break
             except Exception as e:
                 logger.warning(f"Rule '{rule.id}' actions failed: {e}")
+                if wants_intercept:
+                    # A breakpoint rule must never fail open: if we cannot hold
+                    # the flow for a decision, letting it through silently would
+                    # hand traffic to the server that the user meant to inspect.
+                    logger.error(
+                        f"Rule '{rule.id}' requested intercept but the flow could "
+                        f"not be held ({e}); killing it instead of releasing it"
+                    )
+                    if flow.killable:
+                        flow.kill()
+                continue
+
+            applied_rule_ids.append(rule.id)
+
+            if wants_cancel:
+                # Discard the rewrites this rule applied and release unchanged.
+                if original_request is not None:
+                    flow.request = original_request
+                if original_response is not None:
+                    flow.response = original_response
+                if flow.metadata is None:
+                    flow.metadata = {}
+                flow.metadata["mitmproxy_mcp_decision"] = "cancel"
+                continue
+
+            if wants_intercept:
+                try:
+                    # Hold the flow for a manual decision.
+                    self._hold(
+                        flow,
+                        rule.id,
+                        phase,
+                        original_request=original_request,
+                        original_response=original_response,
+                    )
+                except Exception as e:
+                    # Never fail open on a breakpoint rule: kill the flow rather
+                    # than release traffic the user meant to inspect.
+                    logger.error(
+                        f"Rule '{rule.id}' requested intercept but the flow could "
+                        f"not be held ({e}); killing it instead of releasing it"
+                    )
+                    if flow.killable:
+                        flow.kill()
+                break
 
         if applied_rule_ids:
             if flow.metadata is None:
@@ -453,6 +562,11 @@ class RulesAddon:
 
         if t == "intercept":
             # The flow is held for a manual decision; the caller decides.
+            return
+
+        if t == "cancel":
+            # Discard the rewrites this rule applied and release the flow
+            # unchanged. The caller restores the pre-rule snapshot.
             return
 
         if t == "resume":

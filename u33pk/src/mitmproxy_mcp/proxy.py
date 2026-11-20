@@ -282,7 +282,9 @@ class ProxyManager:
         self._ca_config = CaConfig()
         self.event_buffer = EventBuffer()
         self.capture_addon = CaptureAddon(self.store, event_buffer=self.event_buffer, source_proxy=source_proxy)
-        self.rules_addon = RulesAddon(event_buffer=self.event_buffer)
+        self.rules_addon = RulesAddon(
+            event_buffer=self.event_buffer, flow_controller=self
+        )
         self.websocket_rules_addon = WebSocketRulesAddon(event_buffer=self.event_buffer)
         self.crypto_addon = CryptoAddon(self.store, event_buffer=self.event_buffer)
         self.mapping_state = MappingState()
@@ -590,6 +592,18 @@ class ProxyManager:
         count = self.mapping_state.clear_remote_rules()
         self._sync_mapping_options()
         return count
+
+    # ------------------------------------------------------------------
+    # Flow control (must run inside mitmproxy's event loop thread)
+    # ------------------------------------------------------------------
+
+    def resume(self, flow: http.HTTPFlow) -> None:
+        """Release an intercepted flow inside mitmproxy's event loop."""
+        self.call("flow.resume", [flow])
+
+    def kill(self, flow: http.HTTPFlow) -> None:
+        """Kill a flow inside mitmproxy's event loop."""
+        self.call("flow.kill", [flow])
 
     def call(self, command_name: str, *args: Any, timeout: float = 30) -> Any:
         """Thread-safely call a mitmproxy command in its event loop."""

@@ -1,6 +1,7 @@
 """Integration tests for mock server (server-side playback)."""
 
 from __future__ import annotations
+import sys
 
 import subprocess
 import time
@@ -34,7 +35,7 @@ def _cleanup():
 
 def _start_http_server(port: int) -> subprocess.Popen:
     server = subprocess.Popen(
-        ["python", "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
