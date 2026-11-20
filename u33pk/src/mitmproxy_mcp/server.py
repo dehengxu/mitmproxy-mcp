@@ -23,6 +23,7 @@ from mitmproxy_mcp.models import (
     update_response_from_model,
 )
 from mitmproxy_mcp.proxy import CaptureRule, ProxyManager
+from mitmproxy_mcp.redaction import redaction_policy as redaction_policy_dict
 from mitmproxy_mcp.resources import (
     CA_STATUS_URI,
     CONFIG_RULES_URI,
@@ -39,7 +40,14 @@ from mitmproxy_mcp.resources import (
     flows_latest_resource,
     proxy_status_resource,
 )
-from mitmproxy_mcp.rules import Rule
+from mitmproxy_mcp.rules import (
+    Decision,
+    PendingDecision,
+    Rule,
+    RuleSet,
+    RulesAddon,
+    rule_contract as rule_contract_dict,
+)
 from mitmproxy_mcp.store import FlowStore
 from mitmproxy_mcp.tool_info import get_tool_info
 from mitmproxy_mcp.utils import create_http_flow, decode_body, replay_flows, save_flows
@@ -960,6 +968,16 @@ def rule_ctl(
         "disable",
         "pending",
         "decide",
+        "ruleset_list",
+        "ruleset_add",
+        "ruleset_update",
+        "ruleset_delete",
+        "ruleset_enable",
+        "ruleset_disable",
+        "ruleset_add_rule",
+        "ruleset_remove_rule",
+        "ruleset_reorder",
+        "ruleset_move",
     ],
     proxy_id: Literal["main", "aux"] = "main",
     rule: dict[str, Any] | None = None,
@@ -967,13 +985,24 @@ def rule_ctl(
     updates: dict[str, Any] | None = None,
     token: str | None = None,
     decision: Literal["execute", "abort", "cancel"] | None = None,
+    ruleset: dict[str, Any] | None = None,
+    ruleset_id: str | None = None,
+    rule_ids: list[str] | None = None,
+    index: int | None = None,
 ) -> dict[str, Any]:
-    """Automatic rules. Commands: list, add, update, delete, clear, enable, disable, pending, decide. Use tool_info('rule_ctl') for details."""
+    """Automatic rules and rule sets. Commands: list, add, update, delete, clear, enable, disable, pending, decide, ruleset_list, ruleset_add, ruleset_update, ruleset_delete, ruleset_enable, ruleset_disable, ruleset_add_rule, ruleset_remove_rule, ruleset_reorder, ruleset_move. Use tool_info('rule_ctl') for details."""
     try:
         target = _get_proxy_by_id(proxy_id)
         if cmd == "list":
-            rules = target.list_rules()
-            return {"success": True, "rules": [r.model_dump(exclude_none=True) for r in rules]}
+            rulesets = target.list_rulesets()
+            return {
+                "success": True,
+                # Every rule the engine can see, in evaluation order: standalone
+                # rules first, then each set in order. ruleset_id says where the
+                # rule lives (None for a standalone rule).
+                "rules": [r.model_dump(exclude_none=True) for r in target.list_rules()],
+                "rulesets": [rs.model_dump(exclude_none=True) for rs in rulesets],
+            }
         if cmd == "add":
             if rule is None:
                 return {"success": False, "error": "rule is required"}
@@ -1011,6 +1040,111 @@ def rule_ctl(
         if cmd == "clear":
             count = target.clear_rules()
             return {"success": True, "cleared": count}
+        if cmd == "ruleset_list":
+            return {
+                "success": True,
+                "rulesets": [
+                    rs.model_dump(exclude_none=True) for rs in target.list_rulesets()
+                ],
+            }
+        if cmd == "ruleset_add":
+            if ruleset is None:
+                return {"success": False, "error": "ruleset is required"}
+            ruleset_obj = RuleSet(**ruleset)
+            target.add_ruleset(ruleset_obj)
+            return {
+                "success": True,
+                "ruleset": ruleset_obj.model_dump(exclude_none=True),
+            }
+        if cmd == "ruleset_update":
+            if ruleset_id is None:
+                return {"success": False, "error": "ruleset_id is required"}
+            if updates is None:
+                return {"success": False, "error": "updates is required"}
+            updated_set = target.update_ruleset(ruleset_id, updates)
+            if updated_set is None:
+                return {
+                    "success": False,
+                    "error": f"Rule set with id {ruleset_id} not found",
+                }
+            return {
+                "success": True,
+                "ruleset": updated_set.model_dump(exclude_none=True),
+            }
+        if cmd == "ruleset_delete":
+            if ruleset_id is None:
+                return {"success": False, "error": "ruleset_id is required"}
+            if target.delete_ruleset(ruleset_id):
+                return {"success": True}
+            return {
+                "success": False,
+                "error": f"Rule set with id {ruleset_id} not found",
+            }
+        if cmd in ("ruleset_enable", "ruleset_disable"):
+            if ruleset_id is None:
+                return {"success": False, "error": "ruleset_id is required"}
+            updated_set = target.set_ruleset_enabled(
+                ruleset_id, cmd == "ruleset_enable"
+            )
+            if updated_set is None:
+                return {
+                    "success": False,
+                    "error": f"Rule set with id {ruleset_id} not found",
+                }
+            return {
+                "success": True,
+                "ruleset": updated_set.model_dump(exclude_none=True),
+            }
+        if cmd == "ruleset_add_rule":
+            if ruleset_id is None:
+                return {"success": False, "error": "ruleset_id is required"}
+            if rule is None:
+                return {"success": False, "error": "rule is required"}
+            rule_obj = Rule(**rule)
+            result_set = target.add_rule_to_ruleset(ruleset_id, rule_obj, index)
+            if result_set is None:
+                return {
+                    "success": False,
+                    "error": f"Rule set with id {ruleset_id} not found",
+                }
+            return {
+                "success": True,
+                "ruleset": result_set.model_dump(exclude_none=True),
+            }
+        if cmd == "ruleset_remove_rule":
+            if ruleset_id is None:
+                return {"success": False, "error": "ruleset_id is required"}
+            if rule_id is None:
+                return {"success": False, "error": "rule_id is required"}
+            if target.remove_rule_from_ruleset(ruleset_id, rule_id):
+                return {"success": True}
+            return {
+                "success": False,
+                "error": f"Rule {rule_id} not found in rule set {ruleset_id}",
+            }
+        if cmd == "ruleset_reorder":
+            if ruleset_id is None:
+                return {"success": False, "error": "ruleset_id is required"}
+            if rule_ids is None:
+                return {"success": False, "error": "rule_ids is required"}
+            try:
+                result_set = target.reorder_ruleset_rules(ruleset_id, rule_ids)
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+            return {
+                "success": True,
+                "ruleset": result_set.model_dump(exclude_none=True),
+            }
+        if cmd == "ruleset_move":
+            if ruleset_id is None:
+                return {"success": False, "error": "ruleset_id is required"}
+            if index is None:
+                return {"success": False, "error": "index is required"}
+            try:
+                moved = target.move_ruleset(ruleset_id, index)
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+            return {"success": True, "ruleset": moved.model_dump(exclude_none=True)}
         if cmd == "pending":
             pending = target.list_pending_decisions()
             return {
@@ -1178,6 +1312,27 @@ def map_remote_ctl(
         return {"success": False, "error": f"Unknown map_remote command: {cmd}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+def redaction_policy() -> dict[str, Any]:
+    """Default redaction policy for display and export.
+
+    Lists the header names and the query/body parameter names that are masked
+    when a flow is shown or exported. This is a display policy only: the proxy
+    still forwards the real header, query and body values unchanged.
+    """
+    return redaction_policy_dict()
+
+
+@mcp.tool()
+def rule_contract() -> dict[str, Any]:
+    """Machine-readable rule contract: action types, rule-set shape, skip record.
+
+    Lets the WebUI build editors and "skipped by an earlier rule" labels
+    without hard-coding constants that live in the engine.
+    """
+    return rule_contract_dict()
 
 
 @mcp.tool()

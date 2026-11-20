@@ -76,6 +76,7 @@ def config_rules_resource(proxy_manager: ProxyManager) -> dict[str, Any]:
     """Return a snapshot of all active configuration rules and scripts."""
     return {
         "automatic_rules": [r.model_dump(exclude_none=True) for r in proxy_manager.list_rules()],
+        "rule_sets": [rs.model_dump(exclude_none=True) for rs in proxy_manager.list_rulesets()],
         "capture_rules": [r.model_dump(exclude_none=True) for r in proxy_manager.list_capture_rules()],
         "map_local_rules": [r.model_dump(exclude_none=True) for r in proxy_manager.list_map_local_rules()],
         "map_remote_rules": [r.model_dump(exclude_none=True) for r in proxy_manager.list_map_remote_rules()],

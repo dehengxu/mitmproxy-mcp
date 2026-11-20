@@ -28,7 +28,7 @@ from mitmproxy_mcp.crypto import CryptoAddon, CryptoHandler
 from mitmproxy_mcp.events import EventBuffer
 from mitmproxy_mcp.mappings import MapLocalRule, MapRemoteRule, MappingState
 from mitmproxy_mcp.rewrite_web import install as install_rewrite_endpoints
-from mitmproxy_mcp.rules import Decision, PendingDecision, Rule, RulesAddon
+from mitmproxy_mcp.rules import Decision, PendingDecision, Rule, RuleSet, RulesAddon
 from mitmproxy_mcp.store import FlowStore
 from mitmproxy_mcp.websocket_rules import WebSocketRule, WebSocketRulesAddon
 
@@ -487,6 +487,44 @@ class ProxyManager:
     def clear_rules(self) -> int:
         """Delete all automatic rules."""
         return self.rules_addon.clear_rules()
+
+    def list_rulesets(self) -> list[RuleSet]:
+        """Return the configured rule sets in evaluation order."""
+        return self.rules_addon.list_rulesets()
+
+    def add_ruleset(self, ruleset: RuleSet) -> RuleSet:
+        """Add or replace a rule set by id."""
+        return self.rules_addon.add_ruleset(ruleset)
+
+    def update_ruleset(self, ruleset_id: str, updates: dict[str, Any]) -> RuleSet | None:
+        """Update a rule set's metadata (name, enabled)."""
+        return self.rules_addon.update_ruleset(ruleset_id, updates)
+
+    def delete_ruleset(self, ruleset_id: str) -> bool:
+        """Delete a rule set and the rules inside it."""
+        return self.rules_addon.delete_ruleset(ruleset_id)
+
+    def set_ruleset_enabled(self, ruleset_id: str, enabled: bool) -> RuleSet | None:
+        """Turn a whole rule set on or off."""
+        return self.rules_addon.set_ruleset_enabled(ruleset_id, enabled)
+
+    def add_rule_to_ruleset(
+        self, ruleset_id: str, rule: Rule, index: int | None = None
+    ) -> RuleSet | None:
+        """Add a rule inside a rule set, optionally at a position."""
+        return self.rules_addon.add_rule_to_ruleset(ruleset_id, rule, index)
+
+    def remove_rule_from_ruleset(self, ruleset_id: str, rule_id: str) -> bool:
+        """Remove a rule from a rule set."""
+        return self.rules_addon.remove_rule_from_ruleset(ruleset_id, rule_id)
+
+    def reorder_ruleset_rules(self, ruleset_id: str, rule_ids: list[str]) -> RuleSet:
+        """Set the order of the rules inside a rule set."""
+        return self.rules_addon.reorder_ruleset_rules(ruleset_id, rule_ids)
+
+    def move_ruleset(self, ruleset_id: str, index: int) -> RuleSet:
+        """Move a rule set in the evaluation order."""
+        return self.rules_addon.move_ruleset(ruleset_id, index)
 
     def list_pending_decisions(self) -> list[PendingDecision]:
         """Return the flows currently held for a manual decision."""

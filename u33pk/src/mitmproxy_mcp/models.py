@@ -99,6 +99,15 @@ class FlowModel(BaseModel):
     comment: str | None = None
     marked: bool = False
     tags: list[str] = Field(default_factory=list)
+    rules_applied: list[str] = Field(default_factory=list)
+    """Ids of the rules that applied to this flow, in evaluation order."""
+    rules_skipped: list[dict[str, Any]] = Field(default_factory=list)
+    """Rules whose write was skipped because an earlier rule claimed the field.
+
+    Each entry: rule_id, rule_name, ruleset_id, action_type, reason, field
+    ({target, field, name?}), claimed_by (the rule that won) and phase. Also
+    present verbatim in ``metadata['mitmproxy_mcp_rules_skipped']``.
+    """
     metadata: dict[str, Any] = Field(default_factory=dict)
     crypto: dict[str, Any] = Field(default_factory=dict)
 
@@ -305,6 +314,8 @@ def flow_to_model(
         comment=flow.comment or None,
         marked=bool(flow.marked),
         tags=list(metadata.get("tags", [])),
+        rules_applied=list(metadata.get("mitmproxy_mcp_rules_applied", [])),
+        rules_skipped=list(metadata.get("mitmproxy_mcp_rules_skipped", [])),
         metadata=metadata,
         crypto={
             "applied_handlers": applied_handlers,

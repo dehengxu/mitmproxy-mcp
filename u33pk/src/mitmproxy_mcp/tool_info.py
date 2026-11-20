@@ -189,7 +189,7 @@ TOOL_INFO: dict[str, ToolInfo] = {
         "summary": "Manage automatic request/response modification rules. Use proxy_id to target the auxiliary proxy.",
         "commands": {
             "list": {
-                "description": "List all automatic rules.",
+                "description": "List all automatic rules in evaluation order, plus the rule sets. A rule inside a rule set carries its ruleset_id.",
                 "required": [],
                 "optional": ["proxy_id ('main' or 'aux', default 'main')"],
                 "example": {"cmd": "list"},
@@ -221,7 +221,12 @@ TOOL_INFO: dict[str, ToolInfo] = {
                 "example": {"cmd": "clear"},
             },
             "update": {
-                "description": "Update fields of an existing rule (name, enabled, phase, filter, actions, decision).",
+                "description": (
+                    "Update fields of an existing rule (name, enabled, phase, filter, "
+                    "actions, decision). Use this to rename a rule: "
+                    "{'cmd': 'update', 'updates': {'name': '...'}}. A rule's rule set "
+                    "membership is changed with ruleset_add_rule / ruleset_remove_rule."
+                ),
                 "required": ["rule_id", "updates"],
                 "optional": ["proxy_id ('main' or 'aux', default 'main')"],
                 "example": {
@@ -253,6 +258,78 @@ TOOL_INFO: dict[str, ToolInfo] = {
                 "required": ["token", "decision"],
                 "optional": ["proxy_id ('main' or 'aux', default 'main')"],
                 "example": {"cmd": "decide", "token": "abc123", "decision": "execute"},
+            },
+            "ruleset_list": {
+                "description": "List rule sets in evaluation order, each with its enabled flag and its rules in order.",
+                "required": [],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_list"},
+            },
+            "ruleset_add": {
+                "description": "Add a rule set, or replace one with the same id in place (a replacement keeps the set's position in the evaluation order). Rules may be supplied inline.",
+                "required": ["ruleset"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {
+                    "cmd": "ruleset_add",
+                    "ruleset": {"id": "api-rewrite", "name": "API rewrite", "enabled": True},
+                },
+            },
+            "ruleset_update": {
+                "description": "Update a rule set's name or enabled flag. Rules inside are managed with ruleset_add_rule / ruleset_remove_rule / ruleset_reorder.",
+                "required": ["ruleset_id", "updates"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_update", "ruleset_id": "api-rewrite", "updates": {"name": "API"}},
+            },
+            "ruleset_delete": {
+                "description": "Delete a rule set and every rule inside it.",
+                "required": ["ruleset_id"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_delete", "ruleset_id": "api-rewrite"},
+            },
+            "ruleset_enable": {
+                "description": "Turn a whole rule set on. Rules keep their own enabled flags; the set switch gates all of them.",
+                "required": ["ruleset_id"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_enable", "ruleset_id": "api-rewrite"},
+            },
+            "ruleset_disable": {
+                "description": "Turn a whole rule set off without touching its rules.",
+                "required": ["ruleset_id"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_disable", "ruleset_id": "api-rewrite"},
+            },
+            "ruleset_add_rule": {
+                "description": "Add or replace a rule inside a rule set. Optional index places it at that position (0 = first evaluated); omitted appends. A rule moved here leaves any other list.",
+                "required": ["ruleset_id", "rule"],
+                "optional": ["index", "proxy_id ('main' or 'aux', default 'main')"],
+                "example": {
+                    "cmd": "ruleset_add_rule",
+                    "ruleset_id": "api-rewrite",
+                    "rule": {
+                        "id": "set-token",
+                        "filter": "~u api.example.com",
+                        "phase": "request",
+                        "actions": [{"type": "set_query", "name": "access_token", "value": "demo"}],
+                    },
+                },
+            },
+            "ruleset_remove_rule": {
+                "description": "Remove a rule from a rule set. The rule is deleted, not moved to the standalone list.",
+                "required": ["ruleset_id", "rule_id"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_remove_rule", "ruleset_id": "api-rewrite", "rule_id": "set-token"},
+            },
+            "ruleset_reorder": {
+                "description": "Set the order of the rules inside one rule set. rule_ids must name every rule in the set exactly once.",
+                "required": ["ruleset_id", "rule_ids"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_reorder", "ruleset_id": "api-rewrite", "rule_ids": ["a", "b"]},
+            },
+            "ruleset_move": {
+                "description": "Move a whole rule set to a new position in the evaluation order (0 = evaluated first among sets, after the standalone rules).",
+                "required": ["ruleset_id", "index"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "ruleset_move", "ruleset_id": "api-rewrite", "index": 0},
             },
         },
     },
@@ -547,6 +624,42 @@ TOOL_INFO: dict[str, ToolInfo] = {
                 "required": [],
                 "optional": ["proxy_id ('main' or 'aux', default 'main')"],
                 "example": {"cmd": "clear_rules"},
+            },
+        },
+    },
+    "redaction_policy": {
+        "summary": (
+            "Default redaction policy for display and export: which header, query and "
+            "body names are masked. Display only; forwarded traffic is unchanged."
+        ),
+        "commands": {
+            "": {
+                "description": (
+                    "Return the default redaction policy: header names, query/body "
+                    "names, the match rules and the placeholder used. Read it instead "
+                    "of hard-coding the list in a UI."
+                ),
+                "required": [],
+                "optional": [],
+                "example": {},
+            },
+        },
+    },
+    "rule_contract": {
+        "summary": (
+            "Machine-readable rule contract: action types and their fields, the rule "
+            "set shape, the evaluation order, and where skipped writes are recorded."
+        ),
+        "commands": {
+            "": {
+                "description": (
+                    "Return action_types, action_fields, ruleset_schema, "
+                    "evaluation_order, conflict_policy, the flow.metadata keys for "
+                    "applied and skipped rules, and the skip record fields."
+                ),
+                "required": [],
+                "optional": [],
+                "example": {},
             },
         },
     },
