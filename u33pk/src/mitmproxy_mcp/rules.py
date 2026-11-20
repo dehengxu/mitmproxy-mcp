@@ -7,6 +7,8 @@ import base64
 import logging
 import re
 import threading
+import time
+import uuid
 from typing import Any, Literal
 
 from mitmproxy import flowfilter
@@ -35,6 +37,7 @@ class Action(BaseModel):
         "kill",
         "intercept",
         "resume",
+        "cancel",
         "mark",
         "comment",
         "tag",
@@ -119,6 +122,27 @@ class Action(BaseModel):
         return self
 
 
+Decision = Literal["execute", "abort", "cancel"]
+"""Outcome of a manual decision on a held (intercepted) flow.
+
+execute: apply the pending edits and release the flow.
+abort:   drop the flow without forwarding it (flow marked aborted).
+cancel:  discard the pending edits and release the flow unchanged.
+"""
+
+
+class PendingDecision(BaseModel):
+    """A flow held for a manual decision, addressed by a pending token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str
+    flow_id: int
+    rule_id: str
+    phase: Literal["request", "response"]
+    created_at: float
+
+
 class Rule(BaseModel):
     """A rule that matches flows and applies actions automatically."""
 
@@ -130,6 +154,11 @@ class Rule(BaseModel):
     phase: Literal["request", "response", "both"] = "both"
     filter: str = Field(..., min_length=1)
     actions: list[Action] = Field(default_factory=list)
+    decision: Decision = "execute"
+    """Outcome applied when this rule holds a flow for a manual decision.
+
+    Only meaningful for rules whose actions include "intercept".
+    """
 
     _compiled_filter: flowfilter.TFilter | None = PrivateAttr(default=None)
 
@@ -166,6 +195,16 @@ class RulesAddon:
         self._lock = threading.RLock()
         self._rules: list[Rule] = []
         self._event_buffer = event_buffer
+        # token -> (PendingDecision, flow, original_request, original_response)
+        self._pending: dict[
+            str,
+            tuple[
+                PendingDecision,
+                http.HTTPFlow,
+                http.Request | None,
+                http.Response | None,
+            ],
+        ] = {}
 
     # ------------------------------------------------------------------
     # Rule management (called from the MCP tool thread)
@@ -206,6 +245,100 @@ class RulesAddon:
             return count
 
     # ------------------------------------------------------------------
+    # Pending decisions (manual hold / release)
+    # ------------------------------------------------------------------
+
+    def list_pending(self) -> list[PendingDecision]:
+        """Return the flows currently held for a manual decision."""
+        with self._lock:
+            return [entry[0] for entry in self._pending.values()]
+
+    def _hold(
+        self, flow: http.HTTPFlow, rule_id: str, phase: str
+    ) -> PendingDecision:
+        """Hold a flow for a manual decision and return its pending token."""
+        token = uuid.uuid4().hex
+        decision = PendingDecision(
+            token=token,
+            flow_id=flow.id,
+            rule_id=rule_id,
+            phase=phase,  # type: ignore[arg-type]
+            created_at=time.time(),
+        )
+        # Snapshot the untouched messages so a later "cancel" can discard edits.
+        original_request = flow.request.copy() if flow.request is not None else None
+        original_response = (
+            flow.response.copy() if flow.response is not None else None
+        )
+        with self._lock:
+            self._pending[token] = (
+                decision,
+                flow,
+                original_request,
+                original_response,
+            )
+        flow.intercept()
+        if self._event_buffer is not None:
+            self._event_buffer.emit(
+                "flow:pending",
+                {
+                    "token": token,
+                    "flow_id": flow.id,
+                    "rule_id": rule_id,
+                    "phase": phase,
+                    "host": flow.request.host,
+                    "path": flow.request.path,
+                    "method": flow.request.method,
+                },
+            )
+        return decision
+
+    def decide(
+        self, token: str, decision: Decision
+    ) -> tuple[PendingDecision, http.HTTPFlow]:
+        """Resolve a held flow with one of the three decisions.
+
+        execute: release the flow (pending edits are applied by the caller).
+        abort:   kill the flow, it is not forwarded.
+        cancel:  discard pending edits and release the flow unchanged.
+        """
+        with self._lock:
+            entry = self._pending.pop(token, None)
+        if entry is None:
+            raise KeyError(f"No pending decision for token {token}")
+        pending, flow, original_request, original_response = entry
+
+        if decision == "abort":
+            if flow.killable:
+                flow.kill()
+            flow.metadata = flow.metadata or {}
+            flow.metadata["mitmproxy_mcp_decision"] = "abort"
+        elif decision == "cancel":
+            # Discard pending edits: restore the original messages.
+            flow.metadata = flow.metadata or {}
+            flow.metadata["mitmproxy_mcp_decision"] = "cancel"
+            if original_request is not None:
+                flow.request = original_request
+            if original_response is not None:
+                flow.response = original_response
+        else:
+            flow.metadata = flow.metadata or {}
+            flow.metadata["mitmproxy_mcp_decision"] = "execute"
+
+        flow.resume()
+        if self._event_buffer is not None:
+            self._event_buffer.emit(
+                "flow:decided",
+                {
+                    "token": token,
+                    "flow_id": pending.flow_id,
+                    "rule_id": pending.rule_id,
+                    "decision": decision,
+                },
+            )
+        return pending, flow
+
+    # ------------------------------------------------------------------
     # mitmproxy hooks
     # ------------------------------------------------------------------
 
@@ -220,12 +353,18 @@ class RulesAddon:
             rules = list(self._rules)
 
         applied_rule_ids: list[str] = []
+        held = False
         for rule in rules:
             if not rule.matches(flow, phase):
                 continue
             try:
                 await self._apply_actions(flow, rule.actions)
                 applied_rule_ids.append(rule.id)
+                if any(a.type == "intercept" for a in rule.actions):
+                    # Hold the flow for a manual decision.
+                    self._hold(flow, rule.id, phase)
+                    held = True
+                    break
             except Exception as e:
                 logger.warning(f"Rule '{rule.id}' actions failed: {e}")
 
@@ -313,7 +452,7 @@ class RulesAddon:
             return
 
         if t == "intercept":
-            flow.intercept()
+            # The flow is held for a manual decision; the caller decides.
             return
 
         if t == "resume":

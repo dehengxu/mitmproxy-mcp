@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from mitmproxy_mcp.crypto import CryptoAddon, CryptoHandler
 from mitmproxy_mcp.events import EventBuffer
 from mitmproxy_mcp.mappings import MapLocalRule, MapRemoteRule, MappingState
-from mitmproxy_mcp.rules import Rule, RulesAddon
+from mitmproxy_mcp.rules import Decision, PendingDecision, Rule, RulesAddon
 from mitmproxy_mcp.store import FlowStore
 from mitmproxy_mcp.websocket_rules import WebSocketRule, WebSocketRulesAddon
 
@@ -479,6 +479,16 @@ class ProxyManager:
     def clear_rules(self) -> int:
         """Delete all automatic rules."""
         return self.rules_addon.clear_rules()
+
+    def list_pending_decisions(self) -> list[PendingDecision]:
+        """Return the flows currently held for a manual decision."""
+        return self.rules_addon.list_pending()
+
+    def decide_pending(
+        self, token: str, decision: Decision
+    ) -> tuple[PendingDecision, http.HTTPFlow]:
+        """Resolve a held flow with execute / abort / cancel."""
+        return self.rules_addon.decide(token, decision)
 
     def list_capture_rules(self) -> list[CaptureRule]:
         """Return the currently configured capture rules."""

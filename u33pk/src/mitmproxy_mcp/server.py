@@ -950,12 +950,25 @@ def flow_action(
 
 @mcp.tool()
 def rule_ctl(
-    cmd: Literal["list", "add", "delete", "clear"],
+    cmd: Literal[
+        "list",
+        "add",
+        "update",
+        "delete",
+        "clear",
+        "enable",
+        "disable",
+        "pending",
+        "decide",
+    ],
     proxy_id: Literal["main", "aux"] = "main",
     rule: dict[str, Any] | None = None,
     rule_id: str | None = None,
+    updates: dict[str, Any] | None = None,
+    token: str | None = None,
+    decision: Literal["execute", "abort", "cancel"] | None = None,
 ) -> dict[str, Any]:
-    """Automatic rules. Commands: list, add, delete, clear. Use tool_info('rule_ctl') for details."""
+    """Automatic rules. Commands: list, add, update, delete, clear, enable, disable, pending, decide. Use tool_info('rule_ctl') for details."""
     try:
         target = _get_proxy_by_id(proxy_id)
         if cmd == "list":
@@ -967,6 +980,28 @@ def rule_ctl(
             rule_obj = Rule(**rule)
             target.add_rule(rule_obj)
             return {"success": True, "rule": rule_obj.model_dump(exclude_none=True)}
+        if cmd == "update":
+            if rule_id is None:
+                return {"success": False, "error": "rule_id is required"}
+            if updates is None:
+                return {"success": False, "error": "updates is required"}
+            updated = target.update_rule(rule_id, updates)
+            if updated is None:
+                return {"success": False, "error": f"Rule with id {rule_id} not found"}
+            return {
+                "success": True,
+                "rule": updated.model_dump(exclude_none=True),
+            }
+        if cmd == "enable" or cmd == "disable":
+            if rule_id is None:
+                return {"success": False, "error": "rule_id is required"}
+            updated = target.update_rule(rule_id, {"enabled": cmd == "enable"})
+            if updated is None:
+                return {"success": False, "error": f"Rule with id {rule_id} not found"}
+            return {
+                "success": True,
+                "rule": updated.model_dump(exclude_none=True),
+            }
         if cmd == "delete":
             if rule_id is None:
                 return {"success": False, "error": "rule_id is required"}
@@ -976,6 +1011,26 @@ def rule_ctl(
         if cmd == "clear":
             count = target.clear_rules()
             return {"success": True, "cleared": count}
+        if cmd == "pending":
+            pending = target.list_pending_decisions()
+            return {
+                "success": True,
+                "pending": [p.model_dump() for p in pending],
+            }
+        if cmd == "decide":
+            if token is None:
+                return {"success": False, "error": "token is required"}
+            if decision is None:
+                return {"success": False, "error": "decision is required"}
+            try:
+                pending_decision, _ = target.decide_pending(token, decision)
+            except KeyError as e:
+                return {"success": False, "error": str(e)}
+            return {
+                "success": True,
+                "decision": pending_decision.model_dump(),
+                "outcome": decision,
+            }
         return {"success": False, "error": f"Unknown rule command: {cmd}"}
     except Exception as e:
         return {"success": False, "error": str(e)}

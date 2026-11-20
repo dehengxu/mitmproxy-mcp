@@ -220,6 +220,40 @@ TOOL_INFO: dict[str, ToolInfo] = {
                 "optional": ["proxy_id ('main' or 'aux', default 'main')"],
                 "example": {"cmd": "clear"},
             },
+            "update": {
+                "description": "Update fields of an existing rule (name, enabled, phase, filter, actions, decision).",
+                "required": ["rule_id", "updates"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {
+                    "cmd": "update",
+                    "rule_id": "bp",
+                    "updates": {"name": "checkout breakpoint", "decision": "cancel"},
+                },
+            },
+            "enable": {
+                "description": "Enable an existing rule by id.",
+                "required": ["rule_id"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "enable", "rule_id": "bp"},
+            },
+            "disable": {
+                "description": "Disable an existing rule by id (the rule stays configured).",
+                "required": ["rule_id"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "disable", "rule_id": "bp"},
+            },
+            "pending": {
+                "description": "List flows currently held for a manual decision, with their pending token.",
+                "required": [],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "pending"},
+            },
+            "decide": {
+                "description": "Resolve a held flow: execute (release with edits), abort (drop, not forwarded), cancel (discard edits, release unchanged).",
+                "required": ["token", "decision"],
+                "optional": ["proxy_id ('main' or 'aux', default 'main')"],
+                "example": {"cmd": "decide", "token": "abc123", "decision": "execute"},
+            },
         },
     },
     "capture_rule_ctl": {
