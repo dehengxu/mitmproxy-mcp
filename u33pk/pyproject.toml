@@ -8,6 +8,11 @@ dependencies = [
     "mcp>=1.28.0,<2.0.0",
     "mitmproxy>=12.2.3",
     "jsonpath-ng>=1.5.3",
+    # Needed by the SSE transport (``--transport sse``): FastMCP serves it
+    # through Starlette + uvicorn.  They arrive with mcp, but the SSE entry
+    # point calls them directly, so they must be declared here.
+    "starlette>=0.27",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]

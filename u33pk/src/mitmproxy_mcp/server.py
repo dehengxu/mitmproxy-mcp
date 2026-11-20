@@ -1209,7 +1209,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.transport == "sse":
-        _configure_mcp_settings(args.host, args.port)
+        # FastMCP reads the bind address from its settings at run time;
+        # ``run()`` itself takes no host/port arguments.
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
         logger.info("Starting SSE server on %s:%d", args.host, args.port)
         mcp.run(transport="sse")
     else:
