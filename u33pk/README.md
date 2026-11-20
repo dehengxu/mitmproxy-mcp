@@ -23,8 +23,56 @@
 
 ```bash
 uv venv
-uv pip install -e .
+uv sync
 ```
+
+`uv sync` 而不是 `uv pip install -e .`：本项目依赖的 `mitmproxy` 不是 PyPI 版，
+而是 fork（见下节）。
+
+## 依赖与打包
+
+本项目的 `pyproject.toml` 把 `mitmproxy` 指向本地 fork 检出，而不是 PyPI：
+
+```toml
+dependencies = ["mitmproxy"]
+[tool.uv.sources]
+mitmproxy = { path = "../../mitmproxy", editable = false }
+```
+
+- **基线**：`dehengxu/mitmproxy`，分支 `hwx-main`，版本 `13.0.0.dev`。
+- **为什么**：`proxy_ctl(cmd="start", webui=True)` 起的是 mitmproxy 的
+  `WebMaster`，它的 WebUI 静态产物来自所安装的 mitmproxy 包。规则引擎的
+  `/rewrite/*` 端点（`mitmproxy_mcp/rewrite_web.py`）就挂在这个 `WebMaster`
+  的 tornado app 上——WebUI 与规则引擎同进程、同 origin。装 PyPI 版会起官方
+  旧 WebUI，Rewrite 面板没有后端可谈。
+- **路径**：`../../mitmproxy` 指本仓库 `u33pk/` 的父目录的兄弟目录，即开发
+  时的固定布局。换机器时改这一行，或直接
+  `uv pip install --python .venv/bin/python /path/to/mitmproxy`。
+
+**打包/发布前提**：fork 的 WebUI 构建产物
+`mitmproxy/tools/web/static/`（`index-*.js`、`index-*.css`、`vendor-*.js`）
+**是入 git 的**（随 `web/` 源码一起提交，上游 mitmproxy 一直如此）。所以
+`uv sync` / `uv build` 不需要先构建前端。但要注意：**依赖是本地路径来源、
+非 editable 安装**（`editable = false`），`uv sync` 只在 fork 源码有变化时
+才重装。若在 fork 里重新构建了 WebUI（`cd web && npm run ci-build-release`），
+必须让本项目的 venv 重新装一次：
+
+```bash
+uv sync --reinstall-package mitmproxy
+```
+
+否则 venv 里仍是旧的 `static/`，页面会加载不到新构建的 Rewrite 面板。
+
+自检：
+
+```bash
+ls "$(.venv/bin/python -c 'import mitmproxy,os;print(os.path.dirname(mitmproxy.__file__))')/tools/web/static"
+```
+
+注意：`uv build` 打出的 wheel 元数据里只会写 `Requires-Dist: mitmproxy`——
+本地路径来源（`[tool.uv.sources]`）不进 wheel。所以发布到 PyPI 之前必须先有一
+个可安装的 fork 发行物（自建索引或 `--find-links`），否则装本包的人拿到的是
+PyPI 官方 mitmproxy，Rewrite 面板会是空的。
 
 ## 通过 Agent 安装
 
@@ -484,6 +532,41 @@ proxy_ctl(cmd="stop", proxy_id="aux")
 支持的操作包括：`set_header`, `remove_header`, `set_body`, `replace_body`, `set_status`, `set_path`, `set_method`, `delay`, `kill`, `intercept`, `resume`, `mark`, `comment`, `tag`。
 
 `filter` 字段使用 mitmproxy 的 flowfilter 语法（`~u`, `~m`, `~h`, `~t`, `~c` 等）。使用 `intercept` 暂停匹配的流，然后由 LLM 调用 `flow_action(action="resume", flow_id=...)` 或 `flow_action(action="kill", flow_id=...)`。
+
+### fork 的 WebUI 面板（`/rewrite/*`）
+
+以 `proxy_ctl(cmd="start", webui=True, web_port=...)` 启动时，`ProxyManager` 起的是
+mitmproxy 的 `WebMaster`，WebUI 与规则引擎同进程、同 origin。WebUI 的 Rewrite
+面板不做 MCP 调用，而是直接打同一 origin 下的 HTTP 端点：
+
+| 方法 | 路径 | 入参 | 返回 |
+|---|---|---|---|
+| GET | `/rewrite/pending` | — | `{"pending": [...]}`，每项含 `token` / `flow_id` / `rule_id` / `rule_name` / `phase` / `host` / `path` / `method` / `created_at` |
+| POST | `/rewrite/pending/decide` | `{"token", "decision"}`，decision 为 `execute` / `abort` / `cancel` | `{"success": true, "decision": {...}, "outcome": ...}` |
+| GET | `/rewrite/rules` | — | `{"rules": [...], "rulesets": [...]}`（求值顺序：独立规则在前，然后各规则集） |
+| POST | `/rewrite/rules` | 完整规则体（含 `id`） | 有该 id 则更新、否则新增 |
+| POST | `/rewrite/rules/enable` | `{"id", "enabled"}` | 启停单条规则 |
+| POST | `/rewrite/rules/delete` | `{"id"}` | 删除单条规则 |
+| POST | `/rewrite/rulesets/enable` | `{"id", "enabled"}` | 规则集总开关 |
+
+约定：
+
+- **鉴权与 WebUI 完全一致**：启动 token（`?token=`）、auth cookie 或 `Bearer`。
+  裸访问返回 403。这些路由继承 mitmweb 自己的 `RequestHandler`，不是另开服务。
+- **`created_at` 是 epoch 秒（整数）**，`phase` 取 `request` / `response`。
+- **HTTP 200 不代表成功**：`decide` 时若 flow 已不在（重复决策、客户端已断开）
+  返回 `{"success": false, "error": "..."}`，前端据此保留该行并显示原因。参数错
+  为 400，对象不存在为 404。
+- **XSRF**：mitmweb 开着 `xsrf_cookies=True`，但它的首页是静态页、从不渲染
+  `xsrf_form_html()`，所以 token 登录后浏览器根本没有 `_mitmproxy_xsrf` cookie。
+  因此这三个 GET 会顺手下发该 cookie（前端 `fetchApi` 之后就会带
+  `X-XSRFToken`）；带 token 的 POST 按 tornado 规则严格校验，不带 token 的 POST
+  则要求同源（`Sec-Fetch-Site` / `Origin` 不符即 403，配合 `SameSite=Strict` 的
+  auth cookie）。
+- **`webui=False` 时不存在这些路由**：那时跑的是 `DumpMaster`，没有 tornado app，
+  MCP 的 `rule_ctl` 仍是唯一入口。
+- 规则 CRUD 复用 `RulesAddon`（与 `rule_ctl` 同一份真值），REQ-6.2 的「先匹配先
+  生效」「规则集」语义在这组端点上同样生效。
 
 ## 捕获规则
 

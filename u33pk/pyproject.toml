@@ -6,7 +6,18 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "mcp>=1.28.0,<2.0.0",
-    "mitmproxy>=12.2.3",
+    # The WebUI this package serves IS the fork's WebUI: ProxyManager starts a
+    # WebMaster whose static build is the fork's, and the /rewrite/* endpoints
+    # (mitmproxy_mcp.rewrite_web) are mounted on that same tornado app. A PyPI
+    # mitmproxy would start the stock WebUI and the rewrite panel would have
+    # nothing to talk to.
+    # Baseline: the fork dehengxu/mitmproxy @ hwx-main, version 13.0.0.dev,
+    # installed from a local checkout (``[tool.uv.sources]`` below). Not from
+    # PyPI: a PyPI mitmproxy starts the stock WebUI, and the rewrite panel
+    # would have nothing to talk to. The fork's WebUI build output
+    # (``mitmproxy/tools/web/static``) is committed, so no front-end build is
+    # needed before installing -- see "依赖与打包" in README.md.
+    "mitmproxy",
     "jsonpath-ng>=1.5.3",
     # Needed by the SSE transport (``--transport sse``): FastMCP serves it
     # through Starlette + uvicorn.  They arrive with mcp, but the SSE entry
@@ -31,6 +42,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mitmproxy_mcp"]
+
+[tool.uv.sources]
+# The fork checkout. It is the repo next to ``u33pk``'s parent -- the layout
+# this project is developed in -- and uv is what resolves ``mitmproxy`` to it.
+# Adjust the path for a different checkout; ``uv sync`` reads it on every run.
+mitmproxy = { path = "../../mitmproxy", editable = false }
 
 [tool.pytest.ini_options]
 markers = [
