@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from mitmproxy_mcp.crypto import CryptoAddon, CryptoHandler
 from mitmproxy_mcp.events import EventBuffer
 from mitmproxy_mcp.mappings import MapLocalRule, MapRemoteRule, MappingState
+from mitmproxy_mcp.rewrite_web import install as install_rewrite_endpoints
 from mitmproxy_mcp.rules import Decision, PendingDecision, Rule, RulesAddon
 from mitmproxy_mcp.store import FlowStore
 from mitmproxy_mcp.websocket_rules import WebSocketRule, WebSocketRulesAddon
@@ -332,6 +333,11 @@ class ProxyManager:
                     web_port=web_port,
                     web_open_browser=False,
                 )
+                # The WebUI and the rule engine share this one tornado
+                # application, so the rewrite panel talks to /rewrite/* on its
+                # own origin. With webui=False there is no application and the
+                # MCP tools stay the only entry point.
+                install_rewrite_endpoints(self, master)
             else:
                 master = DumpMaster(opts, with_termlog=False, with_dumper=False)
             self.capture_addon.set_capture_filter(capture_filter)
