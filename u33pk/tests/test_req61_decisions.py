@@ -1,12 +1,14 @@
 """Tests for REQ-6.1: breakpoint three-state decisions and manual hold."""
 
 import asyncio
+import time
 
 import pytest
 from mitmproxy import http
 from mitmproxy.connection import Client, Server
 
 from mitmproxy_mcp.rules import Action, Rule, RulesAddon
+from mitmproxy_mcp.store import FlowStore
 
 
 def _make_flow(url: str = "http://example.com/", method: str = "GET") -> http.HTTPFlow:
@@ -289,3 +291,246 @@ def test_cancel_and_intercept_cannot_be_combined() -> None:
             filter="~u example.com",
             actions=[Action(type="intercept"), Action(type="cancel")],
         )
+
+
+# ---------------------------------------------------------------------------
+# Thread-safety of the wake-up path (regressions)
+#
+# mitmproxy runs the proxy in its own event loop thread while the decision
+# arrives on the MCP thread.  ``asyncio.Event.set()`` is not thread-safe:
+# calling it from the MCP thread does not wake a waiter parked in the proxy's
+# loop, so the client connection hangs until it times out.
+#
+# The topology below mirrors production: the hook that holds the flow and the
+# coroutine that waits for the decision both run in the proxy's own (long
+# lived) event loop, and the decision arrives on a different thread.
+# ---------------------------------------------------------------------------
+
+
+def _start_proxy_loop(addon: RulesAddon, flow: http.HTTPFlow):
+    """Run the hook and the waiter in one long-lived loop, like mitmproxy.
+
+    Returns (loop, ready, thread).  ``ready`` resolves once the waiter has
+    been woken; ``thread`` runs the loop in the background.
+    """
+    import threading
+
+    loop = asyncio.new_event_loop()
+    ready: asyncio.Future = loop.create_future()
+
+    async def _scenario() -> None:
+        # The hook holds the flow and records the proxy's loop.
+        await addon.request(flow)
+        # The handler parks until the flow is resumed or killed.
+        await flow.wait_for_resume()
+        if not ready.done():
+            ready.set_result(True)
+
+    def _runner() -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_scenario())
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    # Wait until the waiter actually parked on the event.
+    for _ in range(400):
+        if flow._resume_event is not None:
+            break
+        time.sleep(0.005)
+    return loop, ready, thread
+
+
+def _token_for(addon: RulesAddon, flow: http.HTTPFlow) -> str:
+    """The pending token of this specific flow."""
+    for pending in addon.list_pending():
+        if pending.flow_id == flow.id:
+            return pending.token
+    raise AssertionError("flow is not pending")
+
+
+def test_abort_wakes_waiter_from_another_thread() -> None:
+    """The abort decision must wake a waiter parked in another thread's loop.
+
+    Regression: the fallback path (no flow controller) called
+    ``asyncio.Event.set()`` directly on the MCP thread.  The waiter never
+    woke up and the client connection hung.
+    """
+    import threading
+
+    addon = RulesAddon()
+    flow = _make_flow()
+    addon.add_rule(
+        Rule(id="bp", filter="~u example.com", actions=[Action(type="intercept")])
+    )
+    loop, ready, loop_thread = _start_proxy_loop(addon, flow)
+
+    token = _token_for(addon, flow)
+    assert token
+
+    result: dict = {}
+
+    def _decide() -> None:
+        try:
+            addon.decide(token, "abort")
+            result["ok"] = True
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            result["error"] = exc
+
+    thread = threading.Thread(target=_decide)
+    thread.start()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive(), "decide() blocked"
+    assert "error" not in result, result.get("error")
+
+    # The waiter must have been woken promptly.
+    assert ready.done(), "the waiter was never woken"
+    loop_thread.join(timeout=5)
+
+
+def test_kill_and_wake_inside_the_proxy_loop_does_not_deadlock() -> None:
+    """Killing a flow from inside the proxy's loop must not block on itself.
+
+    Regression: ``kill_and_wake`` dispatched a coroutine to the proxy's event
+    loop and then waited for it with ``future.result()``.  Called from that
+    very loop -- which is what the fail-closed path in the request hook does
+    -- the wait can never complete, so the call hung for the full timeout.
+    """
+    from mitmproxy_mcp.proxy import ProxyManager
+
+    manager = ProxyManager(FlowStore())
+    flow = _make_flow()
+    flow.live = True
+    flow.intercept()
+
+    loop = asyncio.new_event_loop()
+    manager._loop = loop
+    outcome: dict = {}
+
+    async def _kill() -> None:
+        try:
+            manager.kill_and_wake(flow)
+            outcome["ok"] = True
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            outcome["error"] = exc
+
+    def _runner() -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(asyncio.wait_for(_kill(), timeout=5))
+        finally:
+            loop.close()
+
+    import threading
+
+    thread = threading.Thread(target=_runner)
+    thread.start()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive(), "kill_and_wake() deadlocked inside the proxy loop"
+    assert outcome.get("ok") is True, outcome
+    assert flow.live is False, "the flow was not killed"
+
+
+def test_command_call_inside_the_proxy_loop_does_not_deadlock() -> None:
+    """A mitmproxy command called from the proxy's loop must not block.
+
+    Regression: ``call()`` dispatched a coroutine to the proxy's event loop
+    and then waited for it.  Called from that same loop the wait can never
+    complete.
+    """
+    from mitmproxy_mcp.proxy import ProxyManager
+
+    manager = ProxyManager(FlowStore())
+    flow = _make_flow()
+    flow.live = True
+    flow.intercept()
+
+    loop = asyncio.new_event_loop()
+    manager._loop = loop
+
+    class _FakeMaster:
+        class commands:  # noqa: N801 - mimics mitmproxy's attribute name
+            @staticmethod
+            def call(command_name, *args):
+                if command_name == "flow.resume":
+                    for f in args[0]:
+                        f.resume()
+                    return None
+                raise AssertionError(f"unexpected command {command_name}")
+
+    manager._master = _FakeMaster()
+    outcome: dict = {}
+
+    async def _resume() -> None:
+        try:
+            manager.resume(flow)
+            outcome["ok"] = True
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            outcome["error"] = exc
+
+    def _runner() -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(asyncio.wait_for(_resume(), timeout=5))
+        finally:
+            loop.close()
+
+    import threading
+
+    thread = threading.Thread(target=_runner)
+    thread.start()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive(), "resume() deadlocked inside the proxy loop"
+    assert outcome.get("ok") is True, outcome
+    assert flow.intercepted is False, "the flow was not released"
+
+
+def test_concurrent_aborts_all_wake_their_waiters() -> None:
+    """Several flows held at once must all be woken by concurrent aborts.
+
+    Guards against a wake-up that is dropped when other coroutines run in
+    between the kill and the event set.
+    """
+    import threading
+
+    addon = RulesAddon()
+    addon.add_rule(
+        Rule(id="bp", filter="~u example.com", actions=[Action(type="intercept")])
+    )
+
+    setups = []
+    for _ in range(8):
+        flow = _make_flow()
+        setups.append((flow, _start_proxy_loop(addon, flow)))
+
+    tokens = [_token_for(addon, flow) for flow, _ in setups]
+    assert len(set(tokens)) == len(tokens), "tokens must be distinct"
+
+    errors: list = []
+
+    def _decide(tok: str) -> None:
+        try:
+            addon.decide(tok, "abort")
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_decide, args=(tok,)) for tok in tokens]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not any(t.is_alive() for t in threads), "a decide() blocked"
+    assert not errors, errors
+
+    for _flow, (_loop, ready, loop_thread) in setups:
+        assert ready.done(), "a waiter was never woken"
+        loop_thread.join(timeout=5)

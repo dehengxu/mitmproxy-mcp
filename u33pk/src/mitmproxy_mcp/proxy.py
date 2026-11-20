@@ -605,6 +605,23 @@ class ProxyManager:
         """Kill a flow inside mitmproxy's event loop."""
         self.call("flow.kill", [flow])
 
+    def _in_proxy_loop(self) -> bool:
+        """True when the caller already runs inside mitmproxy's event loop.
+
+        Dispatching a coroutine to the loop and then blocking on it would
+        deadlock: the loop cannot run the coroutine while it is blocked
+        waiting for the coroutine's result.
+        """
+        with self._lock:
+            loop = self._loop
+        if loop is None:
+            return False
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return running is loop
+
     def kill_and_wake(self, flow: http.HTTPFlow) -> None:
         """Kill a flow *and* wake whatever waits for it, in one event loop tick.
 
@@ -624,12 +641,21 @@ class ProxyManager:
         if loop is None:
             raise RuntimeError("Proxy is not running")
 
-        async def _kill_and_wake() -> None:
+        def _do_kill_and_wake() -> None:
             if flow.killable:
                 flow.kill()
             event = getattr(flow, "_resume_event", None)
             if event is not None:
                 event.set()
+
+        if self._in_proxy_loop():
+            # Already inside the loop: run it now. Blocking on the future
+            # here would wait for the loop we are currently occupying.
+            _do_kill_and_wake()
+            return
+
+        async def _kill_and_wake() -> None:
+            _do_kill_and_wake()
 
         future = asyncio.run_coroutine_threadsafe(_kill_and_wake(), loop)
         future.result(timeout=30)
@@ -642,6 +668,12 @@ class ProxyManager:
 
         if master is None or loop is None:
             raise RuntimeError("Proxy is not running")
+
+        if self._in_proxy_loop():
+            # Already inside the loop.  `master.commands.call` is synchronous,
+            # so call it directly: dispatching a coroutine to the loop and
+            # then blocking on it would wait for the loop we are occupying.
+            return master.commands.call(command_name, *args)
 
         async def _acall() -> Any:
             return master.commands.call(command_name, *args)

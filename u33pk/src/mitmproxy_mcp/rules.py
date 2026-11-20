@@ -231,7 +231,13 @@ class RulesAddon:
         # flow.resume() must be dispatched there: asyncio.Event.set() from a
         # foreign thread does not wake the waiter.
         self._flow_controller = flow_controller
-        # token -> (PendingDecision, flow, original_request, original_response)
+        # token -> (PendingDecision, flow, original_request, original_response, loop)
+        #
+        # `loop` is the proxy's own event loop, captured while the flow is
+        # held (the hook runs inside that loop).  The decision arrives later
+        # on the MCP thread, and asyncio.Event.set() from a foreign thread
+        # does not wake a waiter parked in the proxy's loop -- so the loop has
+        # to be remembered to be able to hop back onto it.
         self._pending: dict[
             str,
             tuple[
@@ -239,6 +245,7 @@ class RulesAddon:
                 http.HTTPFlow,
                 http.Request | None,
                 http.Response | None,
+                asyncio.AbstractEventLoop | None,
             ],
         ] = {}
 
@@ -316,12 +323,19 @@ class RulesAddon:
             phase=phase,  # type: ignore[arg-type]
             created_at=time.time(),
         )
+        # The hook that holds the flow runs inside the proxy's event loop.
+        # Remember it: the decision comes later on the MCP thread.
+        try:
+            flow_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            flow_loop = None
         with self._lock:
             self._pending[token] = (
                 decision,
                 flow,
                 original_request,
                 original_response,
+                flow_loop,
             )
         flow.intercept()
         if self._event_buffer is not None:
@@ -339,7 +353,7 @@ class RulesAddon:
             )
         return decision
 
-    def _resume_flow(self, flow: http.HTTPFlow) -> None:
+    def _resume_flow(self, flow: http.HTTPFlow, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Release a held flow.
 
         mitmproxy runs in its own event loop thread; asyncio.Event.set() from
@@ -347,10 +361,10 @@ class RulesAddon:
         """
         if self._flow_controller is not None:
             self._flow_controller.resume(flow)
-        else:
-            flow.resume()
+            return
+        self._wake_in_flow_loop(flow, loop, kill=False)
 
-    def _kill_flow(self, flow: http.HTTPFlow) -> None:
+    def _kill_flow(self, flow: http.HTTPFlow, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Kill a held flow and wake the coroutine waiting for it.
 
         Killing alone is not enough: mitmproxy's ``Flow.kill()`` clears the
@@ -361,11 +375,61 @@ class RulesAddon:
         if self._flow_controller is not None:
             self._flow_controller.kill_and_wake(flow)
             return
-        if flow.killable:
-            flow.kill()
+        self._wake_in_flow_loop(flow, loop, kill=True)
+
+    def _wake_in_flow_loop(
+        self,
+        flow: http.HTTPFlow,
+        loop: asyncio.AbstractEventLoop | None,
+        kill: bool,
+    ) -> None:
+        """Wake a held flow without a flow controller.
+
+        Fallback for a standalone ``RulesAddon`` (no ``FlowController``).
+        ``asyncio.Event.set()`` is not thread-safe: calling it from the MCP
+        thread does not wake a waiter parked in the proxy's event loop, and
+        the client connection hangs until it times out. Hop onto the flow's
+        own loop instead.
+        """
         event = getattr(flow, "_resume_event", None)
-        if event is not None:
-            event.set()
+
+        def _do() -> None:
+            if kill:
+                if flow.killable:
+                    flow.kill()
+                # kill() clears `intercepted` but never sets the event.
+                if event is not None:
+                    event.set()
+            else:
+                # resume() clears `intercepted` and sets the event itself.
+                flow.resume()
+
+        if event is None:
+            # No waiter is parked on this flow, so nothing has to be woken.
+            _do()
+            return
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if loop is None or loop.is_closed():
+            # No usable loop for this flow: act inline as a best effort.
+            _do()
+            return
+
+        if running is loop:
+            # Already in the flow's loop: do it here, do not dispatch and
+            # wait for the loop we are currently occupying.
+            _do()
+            return
+
+        async def _wake() -> None:
+            _do()
+
+        future = asyncio.run_coroutine_threadsafe(_wake(), loop)
+        future.result(timeout=30)
 
     def decide(
         self, token: str, decision: Decision
@@ -380,12 +444,12 @@ class RulesAddon:
             entry = self._pending.pop(token, None)
         if entry is None:
             raise KeyError(f"No pending decision for token {token}")
-        pending, flow, original_request, original_response = entry
+        pending, flow, original_request, original_response, flow_loop = entry
 
         if decision == "abort":
             # Killing also wakes the waiting handler: otherwise the client
             # connection hangs instead of being closed.
-            self._kill_flow(flow)
+            self._kill_flow(flow, flow_loop)
             flow.metadata = flow.metadata or {}
             flow.metadata["mitmproxy_mcp_decision"] = "abort"
         elif decision == "cancel":
@@ -396,11 +460,11 @@ class RulesAddon:
                 flow.request = original_request
             if original_response is not None:
                 flow.response = original_response
-            self._resume_flow(flow)
+            self._resume_flow(flow, flow_loop)
         else:
             flow.metadata = flow.metadata or {}
             flow.metadata["mitmproxy_mcp_decision"] = "execute"
-            self._resume_flow(flow)
+            self._resume_flow(flow, flow_loop)
         if self._event_buffer is not None:
             self._event_buffer.emit(
                 "flow:decided",
