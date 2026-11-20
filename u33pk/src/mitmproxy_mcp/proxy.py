@@ -605,6 +605,35 @@ class ProxyManager:
         """Kill a flow inside mitmproxy's event loop."""
         self.call("flow.kill", [flow])
 
+    def kill_and_wake(self, flow: http.HTTPFlow) -> None:
+        """Kill a flow *and* wake whatever waits for it, in one event loop tick.
+
+        mitmproxy's ``Flow.kill()`` clears ``intercepted`` but never sets the
+        flow's resume event. The proxy's hook handler parks in
+        ``wait_for_resume()`` until that event fires, so killing an
+        intercepted flow leaves the client connection hanging until it times
+        out, instead of being closed.
+
+        Killing first and waking second keeps both steps inside a single event
+        loop tick: the HTTP layer then finds the flow already killed and
+        closes the connection with a protocol error instead of forwarding the
+        request upstream.
+        """
+        with self._lock:
+            loop = self._loop
+        if loop is None:
+            raise RuntimeError("Proxy is not running")
+
+        async def _kill_and_wake() -> None:
+            if flow.killable:
+                flow.kill()
+            event = getattr(flow, "_resume_event", None)
+            if event is not None:
+                event.set()
+
+        future = asyncio.run_coroutine_threadsafe(_kill_and_wake(), loop)
+        future.result(timeout=30)
+
     def call(self, command_name: str, *args: Any, timeout: float = 30) -> Any:
         """Thread-safely call a mitmproxy command in its event loop."""
         with self._lock:

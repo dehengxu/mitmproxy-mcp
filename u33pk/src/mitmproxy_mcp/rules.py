@@ -213,6 +213,8 @@ class FlowController(Protocol):
 
     def kill(self, flow: http.HTTPFlow) -> None: ...
 
+    def kill_and_wake(self, flow: http.HTTPFlow) -> None: ...
+
 
 class RulesAddon:
     """mitmproxy addon that applies user-defined rules to live flows."""
@@ -349,10 +351,21 @@ class RulesAddon:
             flow.resume()
 
     def _kill_flow(self, flow: http.HTTPFlow) -> None:
+        """Kill a held flow and wake the coroutine waiting for it.
+
+        Killing alone is not enough: mitmproxy's ``Flow.kill()`` clears the
+        ``intercepted`` flag but never sets the flow's resume event, so the
+        proxy's hook handler stays parked in ``wait_for_resume()`` and the
+        client connection hangs instead of being closed.
+        """
         if self._flow_controller is not None:
-            self._flow_controller.kill(flow)
-        else:
+            self._flow_controller.kill_and_wake(flow)
+            return
+        if flow.killable:
             flow.kill()
+        event = getattr(flow, "_resume_event", None)
+        if event is not None:
+            event.set()
 
     def decide(
         self, token: str, decision: Decision
@@ -370,8 +383,9 @@ class RulesAddon:
         pending, flow, original_request, original_response = entry
 
         if decision == "abort":
-            if flow.killable:
-                self._kill_flow(flow)
+            # Killing also wakes the waiting handler: otherwise the client
+            # connection hangs instead of being closed.
+            self._kill_flow(flow)
             flow.metadata = flow.metadata or {}
             flow.metadata["mitmproxy_mcp_decision"] = "abort"
         elif decision == "cancel":
@@ -382,11 +396,11 @@ class RulesAddon:
                 flow.request = original_request
             if original_response is not None:
                 flow.response = original_response
+            self._resume_flow(flow)
         else:
             flow.metadata = flow.metadata or {}
             flow.metadata["mitmproxy_mcp_decision"] = "execute"
-
-        self._resume_flow(flow)
+            self._resume_flow(flow)
         if self._event_buffer is not None:
             self._event_buffer.emit(
                 "flow:decided",
@@ -439,8 +453,7 @@ class RulesAddon:
                         f"Rule '{rule.id}' requested intercept but the flow could "
                         f"not be held ({e}); killing it instead of releasing it"
                     )
-                    if flow.killable:
-                        flow.kill()
+                    self._kill_flow(flow)
                 continue
 
             applied_rule_ids.append(rule.id)
@@ -473,8 +486,7 @@ class RulesAddon:
                         f"Rule '{rule.id}' requested intercept but the flow could "
                         f"not be held ({e}); killing it instead of releasing it"
                     )
-                    if flow.killable:
-                        flow.kill()
+                    self._kill_flow(flow)
                 break
 
         if applied_rule_ids:

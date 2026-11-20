@@ -44,8 +44,8 @@ def _cleanup():
 
 # Fixed, non-overlapping port blocks for this file. Other test files use
 # 18080-18164 and 19700-19705; these stay clear of them.
-_SERVER_PORTS = (19201, 19202, 19203)
-_PROXY_PORTS = (18201, 18202, 18203)
+_SERVER_PORTS = (19201, 19202, 19203, 19204)
+_PROXY_PORTS = (18201, 18202, 18203, 18204)
 _port_index = {"n": 0}
 
 
@@ -233,5 +233,83 @@ def test_abort_kills_request() -> None:
         assert not t.is_alive()
         # Abort must not deliver the origin's response.
         assert result.get("status") != 404, result
+    finally:
+        server.terminate()
+
+
+@pytest.mark.integration
+def test_abort_closes_client_connection_promptly() -> None:
+    """Abort must close the client connection promptly, not hang until timeout.
+
+    Regression: mitmproxy's ``Flow.kill()`` clears ``intercepted`` but never
+    sets the flow's resume event, so the proxy's hook handler stayed parked in
+    ``wait_for_resume()``. The client then received nothing at all and only
+    gave up when its own socket timeout fired. Abort must end the request.
+    """
+    import threading
+
+    server_port = _free_port()
+    proxy_port = _free_port()
+    server = _start_http_server(server_port)
+    try:
+        assert proxy_ctl(cmd="start", port=proxy_port)["success"] is True
+        assert rule_ctl(
+            cmd="add",
+            rule={
+                "id": "bp",
+                "filter": f"~u 127.0.0.1:{server_port}/api",
+                "phase": "request",
+                "actions": [{"type": "intercept"}],
+            },
+        )["success"] is True
+
+        result: dict = {}
+
+        def _fetch_raw() -> None:
+            started = time.time()
+            try:
+                s = socket.create_connection(("127.0.0.1", proxy_port), timeout=30)
+            except Exception as e:  # noqa: BLE001
+                result["error"] = repr(e)
+                return
+            try:
+                s.sendall(
+                    (
+                        f"GET http://127.0.0.1:{server_port}/api HTTP/1.1\r\n"
+                        f"Host: 127.0.0.1:{server_port}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode()
+                )
+                data = b""
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                result["data"] = data
+            except Exception as e:  # noqa: BLE001
+                result["error"] = repr(e)
+            finally:
+                s.close()
+                result["elapsed"] = round(time.time() - started, 2)
+
+        t = threading.Thread(target=_fetch_raw, daemon=True)
+        t.start()
+
+        pending = _wait_for_pending()
+        assert pending, "the request was never held for a decision"
+
+        r = rule_ctl(cmd="decide", token=pending[0]["token"], decision="abort")
+        assert r["success"] is True
+
+        t.join(timeout=10)
+        assert not t.is_alive(), (
+            "abort left the client hanging instead of closing the connection; "
+            f"result={result!r}"
+        )
+        # The client must not have been left waiting for its own timeout.
+        assert "timed out" not in result.get("error", ""), result
+        # The origin's response must never be delivered.
+        assert b"404" not in result.get("data", b""), result
     finally:
         server.terminate()
