@@ -113,6 +113,9 @@ pip install mitmproxy-mcp
 ### Inspection
 
 * `get_traffic_summary(limit=20)`: Returns a list of recent network flows.
+* `focus_hosts(hosts)`: Focuses hosts so their flows are pinned to the top of the list and everything else is grouped under `Other`. This is a view reorder, not a filter: no flow is hidden, dropped or modified. Hosts match case-insensitively and exactly (no subdomain wildcard). Returns the current focus list.
+* `unfocus_host(host)`: Removes one host from the focus set; its flows go back into `Other`. Unfocusing an unknown host is a no-op. Returns the current focus list.
+* `list_focus()`: Returns the currently focused hosts, in focus order, plus the name of the group that collects every other host (`Other`).
 * `inspect_flow(flow_id)`: Provides full details and a `curl` equivalent for a specific flow.
 * `search_traffic(query, domain, method, limit=50)`: Filter captured traffic by keyword/domain/method.
 * `clear_traffic()`: Clears persisted traffic history.

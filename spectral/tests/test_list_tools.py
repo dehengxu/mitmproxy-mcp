@@ -27,6 +27,10 @@ async def test_list_tools():
         "get_api_patterns",
         "detect_auth_pattern",
         "generate_scraper_code",
+        # REQ-4.2 focus (view reorder, not a filter)
+        "focus_hosts",
+        "unfocus_host",
+        "list_focus",
     }
     missing_tools = expected_new_tools - set(tool_names)
     assert not missing_tools, (

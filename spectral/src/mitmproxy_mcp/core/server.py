@@ -28,6 +28,7 @@ from bs4 import BeautifulSoup
 
 from ..models import ScopeConfig, InterceptionRule
 from .scope import ScopeManager
+from .focus import FocusManager, OTHER_GROUP, group_by_focus, normalize_host
 from .recorder import TrafficRecorder
 from .interceptor import TrafficInterceptor
 from .generation import normalize_scraper_flows, render_scraper_code
@@ -90,6 +91,8 @@ class MitmController:
         self.proxy_task: Optional[asyncio.Task] = None
         self.scope_config = ScopeConfig()
         self.scope_manager = ScopeManager(self.scope_config)
+        # REQ-4.2 focus: a view-reorder set, deliberately separate from scope.
+        self.focus_manager = FocusManager()
         self.recorder = TrafficRecorder(self.scope_manager)
         self.interceptor = TrafficInterceptor()
         self.running = False
@@ -519,6 +522,82 @@ async def set_scope(allowed_domains: List[str]) -> str:
     else:
         domains_str = "everything"
     return f"Updated. Now tracking: {domains_str}"
+
+
+@mcp.tool()
+async def focus_hosts(hosts: List[str]) -> str:
+    """Focus hosts: pin them to the top of the flow list, everything else in "Other".
+
+    Focus is a VIEW REORDER, not a filter:
+    - focused hosts are grouped at the top, in the order you focused them;
+    - every other flow stays in an "Other" group;
+    - no flow is hidden, dropped or modified -- focused and unfocused traffic
+      both remain recorded and listed;
+    - it is independent of filtering (`set_scope`, `search_traffic`), which
+      hides non-matching traffic. Focus only changes order and grouping.
+
+    Applying focus again appends to the current set (idempotent for hosts that
+    are already focused).
+
+    Host matching: case-insensitive EXACT match on the bare host name (no
+    scheme, no port). Both sides are stripped and lower-cased, so
+    "API.Example.com" equals "api.example.com". There is no subdomain wildcard:
+    focusing "example.com" does NOT focus "api.example.com".
+
+    Args:
+        hosts: Host names to focus, e.g. ["api.example.com", "cdn.example.com"].
+            Empty or whitespace-only entries are rejected.
+
+    Returns:
+        JSON with the current focus list, the resolved "other_group" name, and
+        which hosts were added versus already focused.
+    """
+    try:
+        result = controller.focus_manager.focus(hosts)
+    except (TypeError, ValueError) as e:
+        return f"Couldn't focus those hosts: {str(e)}"
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def unfocus_host(host: str) -> str:
+    """Stop focusing one host, so its flows go back into the "Other" group.
+
+    Removing a host only changes grouping order; no flow is created or deleted.
+    Unfocusing a host that is not focused is a no-op (removed: false).
+
+    Host matching: case-insensitive exact match on the bare host name, the same
+    rule `focus_hosts` uses (no subdomain wildcard).
+
+    Args:
+        host: The host to unfocus, e.g. "api.example.com".
+
+    Returns:
+        JSON with the remaining focus list, the "other_group" name, the
+        normalised host and whether it was actually focused (removed).
+    """
+    try:
+        result = controller.focus_manager.unfocus(host)
+    except (TypeError, ValueError) as e:
+        return f"Couldn't unfocus that host: {str(e)}"
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+async def list_focus() -> str:
+    """List the currently focused hosts, in focus order (empty list when none).
+
+    Returns:
+        JSON with "focused_hosts" (normalised, ordered) and the name of the
+        group that collects every other host.
+    """
+    return json.dumps(
+        {
+            "focused_hosts": controller.focus_manager.list_focus(),
+            "other_group": OTHER_GROUP,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()

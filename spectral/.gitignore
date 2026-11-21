@@ -45,3 +45,4 @@ Thumbs.db
 .vscode/
 mitm_proxy.log
 mitm_mcp_traffic.db
+mitm_mcp_focus.json
