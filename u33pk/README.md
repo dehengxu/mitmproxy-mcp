@@ -34,7 +34,7 @@ uv sync
 本项目的 `pyproject.toml` 把 `mitmproxy` 指向本地 fork 检出，而不是 PyPI：
 
 ```toml
-dependencies = ["mitmproxy"]
+dependencies = ["mitmproxy==13.0.0.dev0"]
 [tool.uv.sources]
 mitmproxy = { path = "../../mitmproxy", editable = false }
 ```
@@ -48,6 +48,14 @@ mitmproxy = { path = "../../mitmproxy", editable = false }
 - **路径**：`../../mitmproxy` 指本仓库 `u33pk/` 的父目录的兄弟目录，即开发
   时的固定布局。换机器时改这一行，或直接
   `uv pip install --python .venv/bin/python /path/to/mitmproxy`。
+- **版本钉死**：依赖钉在 `13.0.0.dev0`——这是 fork 自己的版本号，任何包索引
+  上都不存在（PEP 440 规范化后 `13.0.0.dev` → `13.0.0.dev0`）。所以装不上就是
+  装不上，不会静默解析成官方版（上游 PyPI 的 mitmproxy 现在是 `12.3.1`，
+  满足不了这个钉子）。
+- **钉子管的是发布出去的 wheel**：本地开发靠 `[tool.uv.sources]` 的路径源
+  指向 fork 检出，天然装不错；但 uv 对**路径源不执行版本约束**（把钉子改成
+  `==99.99.99` 再 `uv lock` 照样解析通过）。所以钉子的作用是让 **wheel 装到
+  别的机器上**时装不出错版本——那才是会静默拿到官方旧 WebUI 的场景。
 
 **打包/发布前提**：fork 的 WebUI 构建产物
 `mitmproxy/tools/web/static/`（`index-*.js`、`index-*.css`、`vendor-*.js`）
@@ -69,10 +77,47 @@ uv sync --reinstall-package mitmproxy
 ls "$(.venv/bin/python -c 'import mitmproxy,os;print(os.path.dirname(mitmproxy.__file__))')/tools/web/static"
 ```
 
-注意：`uv build` 打出的 wheel 元数据里只会写 `Requires-Dist: mitmproxy`——
-本地路径来源（`[tool.uv.sources]`）不进 wheel。所以发布到 PyPI 之前必须先有一
-个可安装的 fork 发行物（自建索引或 `--find-links`），否则装本包的人拿到的是
-PyPI 官方 mitmproxy，Rewrite 面板会是空的。
+### 发布 / 安装（拿发行版的人）
+
+本地路径来源（`[tool.uv.sources]`）不进 wheel，所以发行版必须**两件一起装，
+fork 在前**：
+
+```bash
+pip install mitmproxy-13.0.0.dev0-py3-none-any.whl   # fork，先装
+pip install mitmproxy_mcp-0.1.0-py3-none-any.whl      # 本包
+```
+
+fork 的 wheel 由 `dehengxu/mitmproxy` 的 `hwx-main` 构建产出（GitHub Release
+附件）；不想下附件也可以直接从 git 归档装：
+
+> **构建 fork wheel 前先清干净 `build/`**：setuptools 把包数据拷进 `build/lib`，
+> 不会删旧文件。之前没清，打出来的 wheel 里混进了 5 个历史 `index-*.js`
+> （`index.html` 只引用其中一个，功能不受影响，但白占约 1MB）。干净的 wheel 里
+> `tools/web/static/` 应当只有 3 个文件 + favicon，和仓库里的完全一致——构建前
+> 把 `build/`、`dist/`、`*.egg-info` 三个目录删掉再 `uv build --wheel`。
+
+```bash
+pip install "mitmproxy @ https://github.com/dehengxu/mitmproxy/archive/refs/heads/hwx-main.zip"
+```
+
+归档装的版本号同样由 `mitmproxy/version.py` 决定（`13.0.0.dev0`），满足上面
+的钉死约束。
+
+**只装本包不先装 fork 会直接失败**：
+
+```
+ERROR: Could not find a version that satisfies the requirement mitmproxy==13.0.0.dev0
+```
+
+这是故意的。宁可装不上，也不能让人拿到官方旧 WebUI、却以为 Rewrite 面板能
+用——那个面板没有 `/rewrite/*` 后端可谈。
+
+自检（确认装的是 fork 的 WebUI，且带 Rewrite 面板）：
+
+```bash
+python -c "import mitmproxy,os;print(os.path.dirname(mitmproxy.__file__))"
+ls "$(python -c 'import mitmproxy,os;print(os.path.dirname(mitmproxy.__file__))')/tools/web/static"
+```
 
 ## 通过 Agent 安装
 

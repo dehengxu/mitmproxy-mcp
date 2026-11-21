@@ -11,13 +11,18 @@ dependencies = [
     # (mitmproxy_mcp.rewrite_web) are mounted on that same tornado app. A PyPI
     # mitmproxy would start the stock WebUI and the rewrite panel would have
     # nothing to talk to.
+    # The pin is deliberate and fail-closed: 13.0.0.dev0 is the fork's own
+    # version and exists on no package index, so a plain `pip install
+    # mitmproxy-mcp` can never silently resolve the upstream release. Install
+    # the fork first (wheel from the GitHub release, or the git archive), then
+    # this package. See "依赖与打包" in README.md.
     # Baseline: the fork dehengxu/mitmproxy @ hwx-main, version 13.0.0.dev,
     # installed from a local checkout (``[tool.uv.sources]`` below). Not from
     # PyPI: a PyPI mitmproxy starts the stock WebUI, and the rewrite panel
     # would have nothing to talk to. The fork's WebUI build output
     # (``mitmproxy/tools/web/static``) is committed, so no front-end build is
     # needed before installing -- see "依赖与打包" in README.md.
-    "mitmproxy",
+    "mitmproxy==13.0.0.dev0",
     "jsonpath-ng>=1.5.3",
     # Needed by the SSE transport (``--transport sse``): FastMCP serves it
     # through Starlette + uvicorn.  They arrive with mcp, but the SSE entry
