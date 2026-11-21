@@ -1100,6 +1100,10 @@ class ProxyManager:
         if thread is not None:
             thread.join(timeout=5)
 
+        # No proxy loop is left to kill flows in, so the pending reaper has
+        # nothing to do until the next start; stop it instead of ticking on.
+        self.rules_addon.stop_reaper()
+
         self.event_buffer.emit("proxy:stopped", {})
         logger.info("mitmproxy stopped")
         return {"success": True}

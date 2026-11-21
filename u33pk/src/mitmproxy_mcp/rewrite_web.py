@@ -15,6 +15,12 @@ The paths are the frozen contract of the frontend (``ducks/rewrite.ts``)::
 
     GET  /rewrite/pending          -> {"pending": [...]}
     POST /rewrite/pending/decide   <- {"token", "decision"}
+
+Each pending entry carries ``token``, ``flow_id``, ``rule_id``, ``rule_name``,
+``phase``, ``host``, ``path``, ``method``, ``created_at``, ``expire_at``
+(``created_at + 300``, epoch seconds) and ``state`` (``"pending"``). A hold
+that expires or whose client disconnects is removed from the queue and stops
+being listed; deciding its token answers ``success: false`` with the reason.
     GET  /rewrite/rules            -> {"rules": [...], "rulesets": [...]}
     POST /rewrite/rules            <- full rule body (add or update)
     POST /rewrite/rules/enable     <- {"id", "enabled"}
@@ -144,6 +150,11 @@ def _pending_payload(manager: ProxyManager) -> list[dict[str, Any]]:
     for pending in manager.list_pending_decisions():
         data = pending.model_dump()
         data["created_at"] = int(data["created_at"])
+        # Epoch seconds, integer, same unit as created_at: the panel renders it
+        # as a countdown. ``state`` is always "pending" here -- an entry that
+        # expired or lost its client was already swept out of the queue by
+        # ``list_pending_decisions`` and never appears in this list.
+        data["expire_at"] = int(data.get("expire_at") or 0)
         entries.append(data)
     return entries
 
@@ -185,7 +196,13 @@ class DecideHandler(RewriteRequestHandler):
         except KeyError as e:
             # The flow moved on (already decided, or the client gave up). The
             # row is still in the WebUI's list: say so instead of pretending.
-            return self.fail(str(e.args[0]) if e.args else "unknown token")
+            # A cleaned-up entry carries its own reason ("expired", "client
+            # disconnected"); a plain KeyError keeps the old wording, quotes
+            # stripped.
+            message = getattr(e, "message", None) or (
+                str(e.args[0]) if e.args else "unknown token"
+            )
+            return self.fail(message)
         except Exception as e:  # noqa: BLE001 - reported, never swallowed
             logger.warning("rewrite decide failed for token %s: %s", token, e)
             return self.fail(str(e))

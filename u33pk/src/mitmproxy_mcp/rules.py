@@ -12,8 +12,10 @@ import uuid
 from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
 
+from mitmproxy import connection
 from mitmproxy import flowfilter
 from mitmproxy import http
+from mitmproxy.connection import ConnectionState
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from mitmproxy_mcp.events import EventBuffer
@@ -152,6 +154,38 @@ class Action(BaseModel):
         return self
 
 
+PENDING_TTL_SECONDS = 300
+"""How long a held flow waits for a decision before it is dropped, in seconds.
+
+Five minutes. The REQ-6.1 acceptance line is "the queue clears itself once the
+pending token expires or the client disconnects"; before this, an abandoned
+hold stayed in ``GET /rewrite/pending`` and in the WebUI panel forever, and the
+request sat on an open client connection with nothing left to release it.
+"""
+
+PENDING_EXPIRED_MESSAGE = "待决策已过期（TTL 5 分钟），已自动清理"
+PENDING_CLIENT_DISCONNECTED_MESSAGE = "客户端已断开，待决策已取消"
+
+_REMOVED_REASONS_MAX = 64
+"""How many cleaned-up tokens are remembered for a better decide() answer."""
+
+
+class PendingGone(KeyError):
+    """A token that is no longer in the queue.
+
+    Subclasses ``KeyError`` on purpose: every existing caller already handles
+    "no such pending decision" that way, so a late decide() keeps answering
+    ``success: false`` -- it only gets a truthful reason now.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+    def __str__(self) -> str:  # KeyError would add its own quotes
+        return self.message
+
+
 Decision = Literal["execute", "abort", "cancel"]
 """Outcome of a manual decision on a held (intercepted) flow.
 
@@ -190,6 +224,22 @@ class PendingDecision(BaseModel):
 
     One unit everywhere: the WebUI panel renders this value directly, and a
     float here would silently be read as milliseconds by some clients.
+    """
+
+    expire_at: int = 0
+    """When this entry is dropped automatically, as epoch seconds.
+
+    ``created_at + PENDING_TTL_SECONDS``. 0 means "not computed yet" and is
+    filled in by :meth:`RulesAddon._hold`; the WebUI counts down to it.
+    """
+
+    state: Literal["pending"] = "pending"
+    """Lifecycle marker of a listed entry.
+
+    Listed entries are by definition still waiting, so this is always
+    "pending"; an entry that expired or whose client disconnected is removed
+    from the queue and never listed again. The field exists so the WebUI can
+    tell a held row from a future state without guessing.
     """
 
 
@@ -540,15 +590,39 @@ class FlowController(Protocol):
 class RulesAddon:
     """mitmproxy addon that applies user-defined rules to live flows."""
 
+    #: How often the background reaper looks for expired and abandoned holds,
+    #: in seconds. Short enough that a 5 minute TTL is honoured to the second
+    #: and that a killed client frees its row within a beat, cheap enough that
+    #: it costs nothing when the queue is empty.
+    reaper_interval: float = 1.0
+
     def __init__(
         self,
         event_buffer: EventBuffer | None = None,
         flow_controller: FlowController | None = None,
+        *,
+        pending_ttl: int = PENDING_TTL_SECONDS,
+        reaper_interval: float | None = None,
+        start_reaper: bool | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._rules: list[Rule] = []
         self._rulesets: list[RuleSet] = []
         self._event_buffer = event_buffer
+        self._pending_ttl = int(pending_ttl)
+        if reaper_interval is not None:
+            self.reaper_interval = float(reaper_interval)
+        # token -> why it left the queue, so a decide() that arrives late can
+        # say "expired" or "client disconnected" instead of "unknown token".
+        self._removed: dict[str, str] = {}
+        # Guards the reaper thread's lifetime. The thread itself only wakes up
+        # to look at `_pending`; it starts lazily (see _ensure_reaper) so a
+        # RulesAddon built in a unit test does not leave a thread behind.
+        # None means "only when a FlowController is attached", i.e. only inside
+        # a running proxy: without one there is nothing a reaper could kill.
+        self._reaper_stop: threading.Event | None = None
+        self._reaper_thread: threading.Thread | None = None
+        self._start_reaper = start_reaper
         # Releases a held flow. mitmproxy runs in its own event loop thread, so
         # flow.resume() must be dispatched there: asyncio.Event.set() from a
         # foreign thread does not wake the waiter.
@@ -787,9 +861,180 @@ class RulesAddon:
     # ------------------------------------------------------------------
 
     def list_pending(self) -> list[PendingDecision]:
-        """Return the flows currently held for a manual decision."""
+        """Return the flows currently held for a manual decision.
+
+        Reading the queue also sweeps it: entries past their TTL or whose
+        client is gone are dropped here, so a panel that polls this endpoint
+        can never show a hold the engine has already given up on, even if the
+        background reaper thread is not running (a unit test, say).
+        """
+        self._sweep_pending()
         with self._lock:
-            return [entry[0] for entry in self._pending.values()]
+            entries = [entry[0] for entry in self._pending.values()]
+        # expire_at is derived, and re-derived on read so a snapshot taken
+        # before the field existed still reports an honest deadline.
+        for decision in entries:
+            if not decision.expire_at:
+                decision.expire_at = decision.created_at + self._pending_ttl
+        return entries
+
+    # -- pending queue cleanup (TTL + client disconnect) -----------------
+
+    def pending_ttl(self) -> int:
+        """The TTL this engine applies, in seconds (300 in production)."""
+        return self._pending_ttl
+
+    def set_pending_ttl(self, seconds: int) -> None:
+        """Change the TTL for holds made from now on.
+
+        Only tests and an operator tuning a single engine call this; the
+        production default stays ``PENDING_TTL_SECONDS``. Entries already in
+        the queue keep the ``expire_at`` computed when they were held.
+        """
+        seconds = int(seconds)
+        if seconds <= 0:
+            raise ValueError("pending TTL must be positive")
+        with self._lock:
+            self._pending_ttl = seconds
+
+    def _ensure_reaper(self) -> None:
+        """Start the background reaper once, on first hold."""
+        with self._lock:
+            if self._reaper_thread is not None and self._reaper_thread.is_alive():
+                return
+            if self._reaper_stop is None:
+                self._reaper_stop = threading.Event()
+            stop = self._reaper_stop
+            thread = threading.Thread(
+                target=self._reaper_loop,
+                args=(stop,),
+                name="u33pk-pending-reaper",
+                daemon=True,
+            )
+            self._reaper_thread = thread
+        thread.start()
+
+    def stop_reaper(self) -> None:
+        """Stop the background reaper (idempotent)."""
+        with self._lock:
+            stop = self._reaper_stop
+            thread = self._reaper_thread
+            self._reaper_thread = None
+            self._reaper_stop = None
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
+
+    def _reaper_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(self.reaper_interval):
+            try:
+                self._sweep_pending()
+            except Exception:  # noqa: BLE001 - a reaper never dies on one bad entry
+                logger.exception("pending reaper sweep failed")
+
+    def _sweep_pending(self) -> list[str]:
+        """Drop expired and abandoned holds; return the tokens removed.
+
+        Two reasons, both ending the same way -- the flow is killed so the
+        client connection is closed and nothing is forwarded upstream:
+
+        * ``expired``: nobody decided within ``_pending_ttl`` seconds.
+        * ``client_disconnected``: the client hung up while the flow was held.
+
+        Must stay cheap: the reaper calls it once a second.
+        """
+        now = time.time()
+        expired: list[tuple[str, PendingDecision, object, object]] = []
+        abandoned: list[tuple[str, PendingDecision, object, object]] = []
+        with self._lock:
+            for token, entry in list(self._pending.items()):
+                decision, flow, _req, _resp, flow_loop = entry
+                if not decision.expire_at:
+                    # An entry queued before this field existed: derive it
+                    # rather than treat 0 as "expired long ago".
+                    decision.expire_at = decision.created_at + self._pending_ttl
+                ttl_left = decision.expire_at - now
+                if ttl_left <= 0:
+                    expired.append((token, decision, flow, flow_loop))
+                elif self._client_gone(flow):
+                    abandoned.append((token, decision, flow, flow_loop))
+            for token, _d, _flow, _loop in expired + abandoned:
+                if token in self._pending:
+                    del self._pending[token]
+        for token, decision, flow, flow_loop in expired:
+            self._finish_removed(token, decision, flow, flow_loop, "expired")
+        for token, decision, flow, flow_loop in abandoned:
+            self._finish_removed(
+                token, decision, flow, flow_loop, "client_disconnected"
+            )
+        return [token for token, _d, _f, _l in expired + abandoned]
+
+    @staticmethod
+    def _client_gone(flow: http.HTTPFlow) -> bool:
+        """True when the client side of a held flow is known to be closed.
+
+        One signal, read off the flow itself: the flow is still ``live`` but
+        its client connection lost ``CAN_READ``. mitmproxy clears that bit in
+        the client's read loop, which is a task of its own, so the bit is
+        already clear while the hook that holds the flow is still parked.
+
+        Deliberately conservative: a flow that is not live, or whose
+        connection state is unknown, counts as alive, so a false positive can
+        never kill a request a user is still waiting for. The
+        ``client_disconnected`` hook is the primary signal; this is only the
+        safety net for the case where that hook never arrived.
+        """
+        if not getattr(flow, "live", False):
+            return False
+        client = getattr(flow, "client_conn", None)
+        if client is None:
+            return False
+        state = getattr(client, "state", None)
+        return state is not None and not (state & ConnectionState.CAN_READ)
+
+    def _finish_removed(
+        self,
+        token: str,
+        decision: PendingDecision,
+        flow: http.HTTPFlow,
+        flow_loop: asyncio.AbstractEventLoop | None,
+        reason: str,
+    ) -> None:
+        """Kill a held flow that left the queue without a decision."""
+        self._remember_removed(token, reason)
+        try:
+            # Same path as an abort: kill and wake in one loop tick, so the
+            # parked hook returns and the client connection is closed instead
+            # of hanging until its own timeout.
+            self._kill_flow(flow, flow_loop)
+        except Exception:  # noqa: BLE001 - the flow may already be gone
+            logger.debug("could not kill abandoned flow %s", token, exc_info=True)
+        flow.metadata = flow.metadata or {}
+        flow.metadata["mitmproxy_mcp_decision"] = reason
+        if self._event_buffer is not None:
+            self._event_buffer.emit(
+                "flow:decided",
+                {
+                    "token": token,
+                    "flow_id": decision.flow_id,
+                    "rule_id": decision.rule_id,
+                    "decision": reason,
+                    "reason": reason,
+                },
+            )
+
+    def _remember_removed(self, token: str, reason: str) -> None:
+        with self._lock:
+            self._removed.pop(token, None)
+            self._removed[token] = reason
+            while len(self._removed) > _REMOVED_REASONS_MAX:
+                self._removed.pop(next(iter(self._removed)))
+
+    def removed_reason(self, token: str) -> str | None:
+        """Why a token left the queue, when it did so without a decision."""
+        with self._lock:
+            return self._removed.get(token)
 
     def _hold(
         self,
@@ -823,6 +1068,7 @@ class RulesAddon:
             method=flow.request.method,
             created_at=int(time.time()),
         )
+        decision.expire_at = decision.created_at + self._pending_ttl
         # The hook that holds the flow runs inside the proxy's event loop.
         # Remember it: the decision comes later on the MCP thread.
         try:
@@ -837,6 +1083,10 @@ class RulesAddon:
                 original_response,
                 flow_loop,
             )
+        if self._start_reaper is not False and (
+            self._start_reaper or self._flow_controller is not None
+        ):
+            self._ensure_reaper()
         flow.intercept()
         if self._event_buffer is not None:
             self._event_buffer.emit(
@@ -942,7 +1192,15 @@ class RulesAddon:
         """
         with self._lock:
             entry = self._pending.pop(token, None)
+            reason = self._removed.get(token)
         if entry is None:
+            # A token that expired or lost its client is gone on purpose: say
+            # which, so the WebUI can drop the row with a real explanation
+            # instead of "unknown token".
+            if reason == "expired":
+                raise PendingGone(PENDING_EXPIRED_MESSAGE)
+            if reason == "client_disconnected":
+                raise PendingGone(PENDING_CLIENT_DISCONNECTED_MESSAGE)
             raise KeyError(f"No pending decision for token {token}")
         pending, flow, original_request, original_response, flow_loop = entry
 
@@ -986,6 +1244,64 @@ class RulesAddon:
 
     async def response(self, flow: http.HTTPFlow) -> None:
         await self._process(flow, "response")
+
+    def client_disconnected(self, client: connection.Client) -> None:
+        """Drop holds whose client just hung up.
+
+        mitmproxy fires this from the connection's own handler task (see
+        ``proxy/server.py``: ``handle_client`` awaits the connection handler,
+        then announces the disconnect), and that task does not park on a held
+        flow -- the hook that holds the flow runs in its own task. So this
+        arrives while the flow is still intercepted, which is exactly when the
+        queue must clear itself.
+
+        Synchronous on purpose: nothing here waits on the flow. The kill is
+        dispatched into the flow's own loop by ``_kill_flow``.
+        """
+        client_id = getattr(client, "id", None)
+        if not self._pending or client_id is None:
+            return
+        doomed: list[tuple[str, PendingDecision, object, object]] = []
+        with self._lock:
+            for token, entry in list(self._pending.items()):
+                decision, flow, _req, _resp, flow_loop = entry
+                held_client = getattr(flow, "client_conn", None)
+                if getattr(held_client, "id", None) == client_id:
+                    doomed.append((token, decision, flow, flow_loop))
+            for token, _d, _flow, _loop in doomed:
+                self._pending.pop(token, None)
+        for token, decision, flow, flow_loop in doomed:
+            self._finish_removed(
+                token, decision, flow, flow_loop, "client_disconnected"
+            )
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Safety net for a client that vanished without the hook firing.
+
+        ``decide()`` pops the entry before killing the flow, so an abort never
+        reaches here with a token still queued.
+        """
+        if not self._pending:
+            return
+        flow_id = str(flow.id) if flow.id is not None else None
+        doomed: list[tuple[str, PendingDecision, object, object]] = []
+        with self._lock:
+            for token, entry in list(self._pending.items()):
+                decision, held_flow, _req, _resp, flow_loop = entry
+                if str(held_flow.id) != flow_id:
+                    continue
+                # The client closing its side is what we clean up for. An
+                # upstream error is not: the flow still has a live client
+                # waiting for a decision.
+                if not self._client_gone(held_flow):
+                    continue
+                doomed.append((token, decision, held_flow, flow_loop))
+            for token, _d, _flow, _loop in doomed:
+                self._pending.pop(token, None)
+        for token, decision, held_flow, flow_loop in doomed:
+            self._finish_removed(
+                token, decision, held_flow, flow_loop, "client_disconnected"
+            )
 
     async def _process(self, flow: http.HTTPFlow, phase: str) -> None:
         # Evaluation order: standalone rules first, then each enabled rule set

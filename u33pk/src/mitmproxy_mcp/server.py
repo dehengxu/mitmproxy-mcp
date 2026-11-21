@@ -1159,7 +1159,9 @@ def rule_ctl(
             try:
                 pending_decision, _ = target.decide_pending(token, decision)
             except KeyError as e:
-                return {"success": False, "error": str(e)}
+                # Plain KeyError quotes its message; a cleaned-up pending
+                # entry (expired / client disconnected) carries the reason.
+                return {"success": False, "error": getattr(e, "message", str(e))}
             return {
                 "success": True,
                 "decision": pending_decision.model_dump(),
