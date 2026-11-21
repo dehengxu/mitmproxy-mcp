@@ -87,8 +87,11 @@ pip install mitmproxy-13.0.0.dev0-py3-none-any.whl   # fork，先装
 pip install mitmproxy_mcp-0.1.0-py3-none-any.whl      # 本包
 ```
 
-fork 的 wheel 由 `dehengxu/mitmproxy` 的 `hwx-main` 构建产出（GitHub Release
-附件）；不想下附件也可以直接从 git 归档装：
+两个 wheel 一起发布在同一个 Release：GitHub 仓库 `dehengxu/mitmproxy-mcp` 的
+`v0.1.0` Release 附件（`mitmproxy-13.0.0.dev0-py3-none-any.whl` +
+`mitmproxy_mcp-0.1.0-py3-none-any.whl`）。其中 fork wheel 由
+`dehengxu/mitmproxy` 的 `hwx-main` 构建产出。不想下附件也可以直接从 git 归档
+装 fork：
 
 > **构建 fork wheel 前先清干净 `build/`**：setuptools 把包数据拷进 `build/lib`，
 > 不会删旧文件。之前没清，打出来的 wheel 里混进了 5 个历史 `index-*.js`
