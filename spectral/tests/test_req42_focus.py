@@ -240,6 +240,21 @@ def test_group_by_focus_case_insensitive():
     assert len(groups[0]["flows"]) == 1
 
 
+def test_group_by_focus_collapses_repeated_focus_entries():
+    """The same host listed twice must produce one group, not several.
+
+    Regression: "a.test", "A.TEST" and " a.test " all normalise to "a.test".
+    Before the fix each entry produced its own group and the flow was counted
+    three times, which broke the "never drops *or duplicates* a flow" contract
+    and diverged from the webui's groupByFocus.
+    """
+    flows = [{"url": "https://a.test/1"}, {"url": "https://b.test/2"}]
+    groups = group_by_focus(flows, ["a.test", "A.TEST", " a.test "])
+    assert [g["group"] for g in groups] == ["a.test", OTHER_GROUP]
+    assert [f["url"] for f in groups[0]["flows"]] == ["https://a.test/1"]
+    assert sum(len(g["flows"]) for g in groups) == len(flows) == 2
+
+
 def test_flow_host_reads_request_host_and_dict_url():
     class _Req:
         host = "API.Example.com"

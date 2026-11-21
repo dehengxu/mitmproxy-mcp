@@ -239,13 +239,23 @@ def group_by_focus(
     """Reorder ``flows`` into focus groups; never drop an entry.
 
     Groups come out in focus order (the order of ``focused_hosts``), with the
-    ``Other`` group last.  A focused group with no matching flow is omitted, so
-    the output holds exactly the flows that came in, in their original relative
-    order inside each group.  This is the ordering the web UI renders; it is
-    deliberately *not* a filter -- ``sum(len(g["flows"])) == len(flows)``.
+    ``Other`` group last.  Repeated entries for the same host are collapsed
+    into one group, and a focused group with no matching flow is omitted, so
+    the output holds exactly the flows that came in -- no more, no fewer -- in
+    their original relative order inside each group.  This is the ordering the
+    web UI renders; it is deliberately *not* a filter --
+    ``sum(len(g["flows"])) == len(flows)``.
     """
-    focused = [normalize_host(h) for h in focused_hosts]
-    focused = [h for h in focused if h]
+    # Collapse repeated entries while keeping focus order: "a.test", "A.TEST"
+    # and " a.test " all normalise to "a.test" and must yield exactly one
+    # group. Without this a flow is counted in several groups, which breaks
+    # the "holds exactly the flows that came in" contract below. The webui
+    # side (groupByFocus in the mitmproxy fork) de-duplicates the same way.
+    focused: List[str] = []
+    for host in focused_hosts:
+        normalized = normalize_host(host)
+        if normalized and normalized not in focused:
+            focused.append(normalized)
     buckets: Dict[str, List[Any]] = {h: [] for h in focused}
     others: List[Any] = []
     for flow in flows:
